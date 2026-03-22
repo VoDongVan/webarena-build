@@ -10,6 +10,13 @@ echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu
 
 chmod -R 777 "$WORKDIR/webarena_data"
 
+# Ensure nginx tmp dirs exist (nginx won't start without these)
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/client_body"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/proxy"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/fastcgi"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/uwsgi"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/scgi"
+
 # Re-extract + re-patch nginx vhost each run (handles node changes)
 apptainer exec shopping_admin.sif cat /etc/nginx/conf.d/default.conf > "$(pwd)/custom_configs/conf_default.conf"
 sed -i 's/listen 80/listen 7780/g' "$(pwd)/custom_configs/conf_default.conf"
@@ -40,4 +47,10 @@ apptainer instance start \
   --bind "$(pwd)/webarena_data/magento_generated:/var/www/magento2/generated" \
   shopping_admin.sif webarena_shopping_admin
 
-echo "Instance started. Waiting for services..."
+# The SIF's %startscript is empty (Docker image had no startscript section).
+# We must launch supervisord explicitly after the instance namespace is up.
+echo "Instance started. Launching supervisord..."
+apptainer exec instance://webarena_shopping_admin \
+  supervisord -n -c /etc/supervisord.conf &
+sleep 2
+echo "Waiting for services to become ready..."

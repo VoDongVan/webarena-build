@@ -36,6 +36,11 @@ echo ">>> [2/7] Creating bind-mount directories..."
 
 mkdir -p custom_configs
 mkdir -p webarena_data/nginx/logs
+mkdir -p webarena_data/nginx/tmp/client_body
+mkdir -p webarena_data/nginx/tmp/proxy
+mkdir -p webarena_data/nginx/tmp/fastcgi
+mkdir -p webarena_data/nginx/tmp/uwsgi
+mkdir -p webarena_data/nginx/tmp/scgi
 mkdir -p webarena_data/mysql
 mkdir -p webarena_data/redis
 mkdir -p webarena_data/tmp
@@ -269,6 +274,13 @@ echo "=== Shopping Admin starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu ==="
 
 chmod -R 777 "$WORKDIR/webarena_data"
+
+# Ensure nginx tmp dirs exist (nginx won't start without these)
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/client_body"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/proxy"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/fastcgi"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/uwsgi"
+mkdir -p "$WORKDIR/webarena_data/nginx/tmp/scgi"
 
 # Re-extract + re-patch nginx vhost each run (handles node changes)
 apptainer exec shopping_admin.sif cat /etc/nginx/conf.d/default.conf > "$(pwd)/custom_configs/conf_default.conf"
