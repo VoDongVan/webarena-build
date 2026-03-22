@@ -160,6 +160,13 @@ http {
 }
 EOF
 
+echo "    Writing start.sh (bypasses docker-entrypoint.sh which requires root)..."
+cat > custom_configs/start.sh << 'EOF'
+#!/bin/bash
+exec supervisord -n -c /etc/supervisord.conf
+EOF
+chmod +x custom_configs/start.sh
+
 echo "    Writing supervisord.conf..."
 cat > custom_configs/supervisord.conf << 'EOF'
 [unix_http_server]
@@ -268,7 +275,15 @@ apptainer exec shopping_admin.sif cat /etc/nginx/conf.d/default.conf > "$(pwd)/c
 sed -i 's/listen 80/listen 7780/g' "$(pwd)/custom_configs/conf_default.conf"
 sed -i 's/listen \[::\]:80/listen \[::\]:7780/g' "$(pwd)/custom_configs/conf_default.conf"
 
+# Write a minimal entrypoint that bypasses docker-entrypoint.sh (which requires root for chown)
+cat > "$(pwd)/custom_configs/start.sh" << 'EOF'
+#!/bin/bash
+exec supervisord -n -c /etc/supervisord.conf
+EOF
+chmod +x "$(pwd)/custom_configs/start.sh"
+
 apptainer instance start \
+  --bind "$(pwd)/custom_configs/start.sh:/docker-entrypoint.sh" \
   --bind "$(pwd)/custom_configs/supervisord.conf:/etc/supervisord.conf" \
   --bind "$(pwd)/custom_configs/nginx.conf:/etc/nginx/nginx.conf" \
   --bind "$(pwd)/custom_configs/conf_default.conf:/etc/nginx/conf.d/default.conf" \
@@ -283,8 +298,7 @@ apptainer instance start \
   --bind "$(pwd)/webarena_data/es_config:/usr/share/java/elasticsearch/config" \
   --bind "$(pwd)/webarena_data/magento_var:/var/www/magento2/var" \
   --bind "$(pwd)/webarena_data/magento_generated:/var/www/magento2/generated" \
-  shopping_admin.sif webarena_shopping_admin \
-  supervisord -n -c /etc/supervisord.conf
+  shopping_admin.sif webarena_shopping_admin
 
 echo "Instance started. Waiting for services..."
 RUNEOF
