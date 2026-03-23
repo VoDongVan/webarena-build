@@ -39,6 +39,11 @@ echo ">>> [2/7] Creating bind-mount directories..."
  
 mkdir -p custom_configs
 mkdir -p webarena_data/nginx/logs
+mkdir -p webarena_data/nginx/tmp/client_body
+mkdir -p webarena_data/nginx/tmp/proxy
+mkdir -p webarena_data/nginx/tmp/fastcgi
+mkdir -p webarena_data/nginx/tmp/uwsgi
+mkdir -p webarena_data/nginx/tmp/scgi
 mkdir -p webarena_data/mysql
 mkdir -p webarena_data/tmp
 mkdir -p webarena_data/log
@@ -80,24 +85,25 @@ chmod -R 777 webarena_data/magento_generated
 echo ""
 echo ">>> [4/7] Creating custom config files..."
  
-echo "    Patching nginx config (port 80 → 8080)..."
+echo "    Patching nginx config (port 80 → 7770)..."
 apptainer exec shopping.sif cat /etc/nginx/conf.d/default.conf > custom_configs/conf_default.conf
 apptainer exec shopping.sif cat /etc/nginx/http.d/default.conf > custom_configs/http_default.conf
- 
-sed -i 's/listen 80/listen 8080/g' custom_configs/conf_default.conf
-sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' custom_configs/conf_default.conf
-sed -i 's/listen 80/listen 8080/g' custom_configs/http_default.conf
-sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' custom_configs/http_default.conf
+
+sed -i 's/listen 80/listen 7770/g' custom_configs/conf_default.conf
+sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' custom_configs/conf_default.conf
+sed -i 's/listen 80/listen 7770/g' custom_configs/http_default.conf
+sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' custom_configs/http_default.conf
  
 echo "    Creating rootless Elasticsearch supervisor config..."
 cat > custom_configs/elasticsearch.ini << 'EOF'
 [program:elasticsearch]
-command=bash -c "ES_JAVA_HOME=/usr elasticsearch"
+command=/usr/share/java/elasticsearch/bin/elasticsearch
+environment=ES_JAVA_HOME=/usr,ES_JAVA_OPTS="-Xms512m -Xmx512m"
 autostart=true
 autorestart=true
 priority=8
 startretries=3
-stopwaitsecs=10
+stopwaitsecs=30
 stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
@@ -119,14 +125,21 @@ WORKDIR="\$(cd "\$(dirname "\$0")" && pwd)"
 cd "\$WORKDIR"
  
 chmod -R 777 "\$WORKDIR/webarena_data"
- 
+
+# Ensure nginx tmp dirs exist
+mkdir -p "\$WORKDIR/webarena_data/nginx/tmp/client_body"
+mkdir -p "\$WORKDIR/webarena_data/nginx/tmp/proxy"
+mkdir -p "\$WORKDIR/webarena_data/nginx/tmp/fastcgi"
+mkdir -p "\$WORKDIR/webarena_data/nginx/tmp/uwsgi"
+mkdir -p "\$WORKDIR/webarena_data/nginx/tmp/scgi"
+
 # Re-extract nginx configs each run in case the node changed
 apptainer exec shopping.sif cat /etc/nginx/conf.d/default.conf > "\$(pwd)/custom_configs/conf_default.conf"
 apptainer exec shopping.sif cat /etc/nginx/http.d/default.conf > "\$(pwd)/custom_configs/http_default.conf"
  
-sed -i 's/listen 80/listen 8080/g' "\$(pwd)/custom_configs/conf_default.conf"
+sed -i 's/listen 80/listen 7770/g' "\$(pwd)/custom_configs/conf_default.conf"
 sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' "\$(pwd)/custom_configs/conf_default.conf"
-sed -i 's/listen 80/listen 8080/g' "\$(pwd)/custom_configs/http_default.conf"
+sed -i 's/listen 80/listen 7770/g' "\$(pwd)/custom_configs/http_default.conf"
 sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' "\$(pwd)/custom_configs/http_default.conf"
  
 apptainer instance run \\
@@ -160,7 +173,7 @@ sh run_shopping.sh
  
 echo "    Waiting for all services to become ready..."
 for i in $(seq 1 30); do
-    CODE=$(apptainer exec instance://webarena_shopping curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null || echo "000")
+    CODE=$(apptainer exec instance://webarena_shopping curl -s -o /dev/null -w "%{http_code}" http://localhost:7770 2>/dev/null || echo "000")
     if [ "$CODE" = "200" ] || [ "$CODE" = "302" ]; then
         echo "    Services ready (HTTP $CODE)."
         break
@@ -194,11 +207,11 @@ apptainer exec instance://webarena_shopping php /var/www/magento2/bin/magento ca
 echo ""
 echo "============================================================"
 echo " Setup complete!"
-echo " The shopping site is running at http://localhost:8080"
+echo " The shopping site is running at http://localhost:7770"
 echo " (inside the cluster)"
 echo ""
 echo " To access from your laptop, run this SSH tunnel command:"
-echo "   ssh -i ~/.ssh/unity-privkey.key -L 7770:$(hostname):8080 <your_username>@unity.rc.umass.edu"
+echo "   ssh -i ~/.ssh/unity-privkey.key -L 7770:$(hostname):7770 <your_username>@unity.rc.umass.edu"
 echo " Then open http://localhost:7770 in your browser."
 echo ""
 echo " To stop the instance:  apptainer instance stop webarena_shopping"

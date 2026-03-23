@@ -3,14 +3,21 @@
 cd /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/shopping/
 chmod -R 777 /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/shopping/webarena_data
 
-# Re-extract nginx configs each run (port 80 → 8080)
+# Ensure nginx tmp dirs exist
+mkdir -p $(pwd)/webarena_data/nginx/tmp/client_body
+mkdir -p $(pwd)/webarena_data/nginx/tmp/proxy
+mkdir -p $(pwd)/webarena_data/nginx/tmp/fastcgi
+mkdir -p $(pwd)/webarena_data/nginx/tmp/uwsgi
+mkdir -p $(pwd)/webarena_data/nginx/tmp/scgi
+
+# Re-extract nginx configs each run (port 80 → 7770)
 apptainer exec shopping.sif cat /etc/nginx/conf.d/default.conf > $(pwd)/custom_configs/conf_default.conf
 apptainer exec shopping.sif cat /etc/nginx/http.d/default.conf > $(pwd)/custom_configs/http_default.conf
 
-sed -i 's/listen 80/listen 8080/g' $(pwd)/custom_configs/conf_default.conf
-sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' $(pwd)/custom_configs/conf_default.conf
-sed -i 's/listen 80/listen 8080/g' $(pwd)/custom_configs/http_default.conf
-sed -i 's/listen \[::\]:80/listen \[::\]:8080/g' $(pwd)/custom_configs/http_default.conf
+sed -i 's/listen 80/listen 7770/g' $(pwd)/custom_configs/conf_default.conf
+sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/conf_default.conf
+sed -i 's/listen 80/listen 7770/g' $(pwd)/custom_configs/http_default.conf
+sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/http_default.conf
 
 # Copy MySQL data if not already done
 if [ ! -d "$(pwd)/webarena_data/mysql/mysql" ]; then
