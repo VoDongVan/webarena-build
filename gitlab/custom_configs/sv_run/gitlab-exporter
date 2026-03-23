@@ -1,0 +1,6 @@
+#!/bin/sh
+exec 2>&1
+umask 077
+exec chpst -P -e /opt/gitlab/etc/gitlab-exporter/env \
+  /opt/gitlab/embedded/bin/gitlab-exporter web \
+    -c /var/opt/gitlab/gitlab-exporter/gitlab-exporter.yml

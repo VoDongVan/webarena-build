@@ -1,0 +1,19 @@
+#!/bin/sh
+cd /var/opt/gitlab/gitlab-rails/working
+exec 2>&1
+mkdir -p /dev/shm/gitlab/sidekiq
+rm /dev/shm/gitlab/sidekiq/*.db 2>/dev/null
+chmod 0700 /dev/shm/gitlab/sidekiq
+export prometheus_run_dir='/dev/shm/gitlab/sidekiq'
+
+exec chpst -e /opt/gitlab/etc/gitlab-rails/env -P \
+  /usr/bin/env \
+    prometheus_multiproc_dir="${prometheus_run_dir}" \
+    /opt/gitlab/embedded/service/gitlab-rails/bin/sidekiq-cluster \
+      -e production \
+      -r /opt/gitlab/embedded/service/gitlab-rails \
+      -m 20 \
+      --timeout 25 \
+        "*"
+
+# Do not remove this line; it prevents trouble with the trailing backslashes above.

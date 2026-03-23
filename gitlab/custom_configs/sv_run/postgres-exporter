@@ -1,0 +1,5 @@
+#!/bin/sh
+exec 2>&1
+umask 077
+exec chpst -e /opt/gitlab/etc/postgres-exporter/env -P \
+  /opt/gitlab/embedded/bin/postgres_exporter --web.listen-address=localhost:9187 --extend.query-path=/var/opt/gitlab/postgres-exporter/queries.yaml

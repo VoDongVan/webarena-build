@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+exec 2>&1
+cd /var/opt/gitlab/gitlab-workhorse
+exec chpst -e /opt/gitlab/etc/gitlab-workhorse/env -P \
+  /opt/gitlab/embedded/bin/gitlab-workhorse \
+    -listenNetwork unix \
+    -listenUmask 0 \
+    -listenAddr /var/opt/gitlab/gitlab-workhorse/sockets/socket \
+    -authBackend http://localhost:8080 \
+    -authSocket /var/opt/gitlab/gitlab-rails/sockets/gitlab.socket \
+    -documentRoot /opt/gitlab/embedded/service/gitlab-rails/public \
+    -pprofListenAddr '' \
+    -prometheusListenAddr localhost:9229 \
+    -secretPath /opt/gitlab/embedded/service/gitlab-rails/.gitlab_workhorse_secret \
+    -logFormat json \
+    -config config.toml
+
+# Do not remove this line; it prevents trouble with the trailing backslashes above.

@@ -1,0 +1,6 @@
+#!/bin/sh
+exec 2>&1
+umask 077
+exec chpst -P \
+  /opt/gitlab/embedded/bin/redis-server \
+  /var/opt/gitlab/redis/redis.conf

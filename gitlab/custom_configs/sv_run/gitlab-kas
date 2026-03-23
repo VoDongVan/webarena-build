@@ -1,0 +1,4 @@
+#!/bin/bash
+exec 2>&1
+exec chpst -e /opt/gitlab/etc/gitlab-kas/env -P \
+  /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml

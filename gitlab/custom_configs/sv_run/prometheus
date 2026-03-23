@@ -1,0 +1,5 @@
+#!/bin/sh
+exec 2>&1
+umask 077
+exec chpst -P -e /opt/gitlab/etc/prometheus/env \
+  /opt/gitlab/embedded/bin/prometheus --web.listen-address=localhost:9090 --storage.tsdb.path=/var/opt/gitlab/prometheus/data --config.file=/var/opt/gitlab/prometheus/prometheus.yml

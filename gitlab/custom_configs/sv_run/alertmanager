@@ -1,0 +1,5 @@
+#!/bin/sh
+exec 2>&1
+umask 077
+exec chpst -P -e /opt/gitlab/etc/alertmanager/env \
+  /opt/gitlab/embedded/bin/alertmanager --web.listen-address=localhost:9093 --storage.path=/var/opt/gitlab/alertmanager/data --config.file=/var/opt/gitlab/alertmanager/alertmanager.yml

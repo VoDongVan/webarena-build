@@ -9,6 +9,7 @@ This directory contains the WebArena environments adapted to run under **Apptain
 | Magento storefront | `shopping/` | 7770 | `webarena_shopping` |
 | Magento admin panel | `shopping_admin/` | 7780 | `webarena_shopping_admin` |
 | Reddit (Postmill forum) | `reddit/` | 9999 | `webarena_reddit` |
+| GitLab | `gitlab/` | 8023 | `webarena_gitlab` |
 
 See the `README.md` in each subdirectory for first-time setup instructions.
 
@@ -47,12 +48,13 @@ HTTP 302 is the expected healthy response (Magento redirects root to the storefr
 A single SSH command can tunnel both ports simultaneously:
 
 ```bash
-ssh -L 7770:<shopping-node>:7770 -L 7780:<shopping-admin-node>:7780 -L 9999:<reddit-node>:9999 <username>@unity.rc.umass.edu
+ssh -L 7770:<shopping-node>:7770 -L 7780:<shopping-admin-node>:7780 -L 9999:<reddit-node>:9999 -L 8023:<gitlab-node>:8023 <username>@unity.rc.umass.edu
 ```
 
 The Unity login node has network access to all compute nodes and acts as a relay for both tunnels. Then open:
 - Shopping storefront: `http://localhost:7770`
 - Admin panel: `http://localhost:7780/admin`
+- GitLab: `http://localhost:8023/explore`
 
 ### Stop both
 
@@ -84,8 +86,10 @@ squeue -u $USER --format="%i %j %N %T %l %M"
 |---|---|
 | `shopping/slurm_shopping.sh` | Runs `webarena_shopping` on a CPU node |
 | `shopping_admin/slurm_shopping_admin.sh` | Runs `webarena_shopping_admin` on a CPU node |
+| `reddit/slurm_reddit.sh` | Runs `webarena_reddit` on a CPU node |
+| `gitlab/slurm_gitlab.sh` | Runs `webarena_gitlab` on a CPU node |
 
-Both request: 4 CPUs, 32 GB RAM, `cpu` partition, 8-hour time limit.
+All request: 4 CPUs, 32 GB RAM, `cpu` partition, 8-hour time limit.
 
 ---
 

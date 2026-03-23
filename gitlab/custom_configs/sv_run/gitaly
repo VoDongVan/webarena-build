@@ -1,0 +1,7 @@
+#!/bin/sh
+ulimit -n 15000
+set -e
+exec 2>&1
+cd /var/opt/gitlab/gitaly
+exec chpst -e /opt/gitlab/etc/gitaly/env -P \
+  /opt/gitlab/embedded/bin/gitaly-wrapper /opt/gitlab/embedded/bin/gitaly /var/opt/gitlab/gitaly/config.toml

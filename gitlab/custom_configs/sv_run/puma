@@ -1,0 +1,12 @@
+#!/bin/bash
+exec 2>&1
+mkdir -p /dev/shm/gitlab/puma
+chmod 0700 /dev/shm/gitlab/puma
+export prometheus_run_dir='/dev/shm/gitlab/puma'
+
+exec chpst -P \
+  -e /opt/gitlab/etc/gitlab-rails/env \
+  /usr/bin/env \
+    prometheus_multiproc_dir="${prometheus_run_dir}" \
+    ACTION_CABLE_WORKER_POOL_SIZE=4 \
+    /opt/gitlab/embedded/bin/bundle exec puma -C /var/opt/gitlab/gitlab-rails/etc/puma.rb
