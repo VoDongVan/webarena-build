@@ -13,18 +13,17 @@ chmod -R 700 "$WORKDIR/webarena_data/pgsql"
 # Remove stale postmaster.pid if present (prevents postgres startup)
 rm -f "$WORKDIR/webarena_data/pgsql/postmaster.pid"
 # Everything else should be freely writable
-chmod -R 777 "$WORKDIR/webarena_data/nginx_tmp"
 chmod -R 777 "$WORKDIR/webarena_data/run"
 chmod -R 777 "$WORKDIR/webarena_data/log"
 chmod -R 777 "$WORKDIR/webarena_data/tmp"
 chmod -R 777 "$WORKDIR/webarena_data/postmill_var"
 
-# Ensure nginx tmp dirs exist
-mkdir -p "$WORKDIR/webarena_data/nginx_tmp/client_body"
-mkdir -p "$WORKDIR/webarena_data/nginx_tmp/proxy"
-mkdir -p "$WORKDIR/webarena_data/nginx_tmp/fastcgi"
-mkdir -p "$WORKDIR/webarena_data/nginx_tmp/uwsgi"
-mkdir -p "$WORKDIR/webarena_data/nginx_tmp/scgi"
+# Ensure nginx tmp dirs exist inside /tmp (which is bind-mounted as writable)
+mkdir -p "$WORKDIR/webarena_data/tmp/nginx/client_body"
+mkdir -p "$WORKDIR/webarena_data/tmp/nginx/proxy"
+mkdir -p "$WORKDIR/webarena_data/tmp/nginx/fastcgi"
+mkdir -p "$WORKDIR/webarena_data/tmp/nginx/uwsgi"
+mkdir -p "$WORKDIR/webarena_data/tmp/nginx/scgi"
 mkdir -p "$WORKDIR/webarena_data/run/nginx"
 mkdir -p "$WORKDIR/webarena_data/run/postgresql"
 mkdir -p "$WORKDIR/webarena_data/log/nginx"
@@ -33,6 +32,12 @@ mkdir -p "$WORKDIR/webarena_data/log/nginx"
 apptainer exec reddit.sif cat /etc/nginx/conf.d/default.conf > "$WORKDIR/custom_configs/conf_default.conf"
 sed -i 's/listen 80/listen 9999/g' "$WORKDIR/custom_configs/conf_default.conf"
 sed -i 's/listen \[::\]:80/listen \[::\]:9999/g' "$WORKDIR/custom_configs/conf_default.conf"
+
+# Patch main nginx.conf to redirect temp dirs into /tmp (which is bind-mounted writable)
+# /var/tmp/nginx does not exist in this SIF, so we must redirect temp paths.
+apptainer exec reddit.sif cat /etc/nginx/nginx.conf > "$WORKDIR/custom_configs/nginx.conf"
+sed -i '/http {/a\  client_body_temp_path /tmp/nginx/client_body;\n  proxy_temp_path /tmp/nginx/proxy;\n  fastcgi_temp_path /tmp/nginx/fastcgi;\n  uwsgi_temp_path /tmp/nginx/uwsgi;\n  scgi_temp_path /tmp/nginx/scgi;' \
+    "$WORKDIR/custom_configs/nginx.conf"
 
 # Re-write start.sh each run
 cat > "$WORKDIR/custom_configs/start.sh" << 'EOF'
@@ -44,9 +49,9 @@ chmod +x "$WORKDIR/custom_configs/start.sh"
 apptainer instance start \
   --bind "$WORKDIR/custom_configs/start.sh:/docker-entrypoint.sh" \
   --bind "$WORKDIR/custom_configs/pgsql.ini:/etc/supervisor.d/pgsql.ini" \
+  --bind "$WORKDIR/custom_configs/nginx.conf:/etc/nginx/nginx.conf" \
   --bind "$WORKDIR/custom_configs/conf_default.conf:/etc/nginx/conf.d/default.conf" \
   --bind "$WORKDIR/webarena_data/pgsql:/usr/local/pgsql/data" \
-  --bind "$WORKDIR/webarena_data/nginx_tmp:/var/tmp/nginx" \
   --bind "$WORKDIR/webarena_data/run:/run" \
   --bind "$WORKDIR/webarena_data/run:/var/run" \
   --bind "$WORKDIR/webarena_data/log:/var/log" \
