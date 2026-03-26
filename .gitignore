@@ -1,3 +1,23 @@
 *.sif
 *.tar
 webarena_data/
+
+# SLURM output logs
+*.out
+
+# Runtime hostname files written by SLURM jobs
+homepage/.*_node
+
+# Python
+homepage/venv/
+homepage/__pycache__/
+
+# Runtime/generated files
+shopping/dump.rdb
+shopping/instance_startup.log
+shopping/my_nginx_config
+shopping_admin/supervisord.pid
+wikipedia/data/
+
+# Generated at runtime by run_reddit.sh
+reddit/custom_configs/nginx.conf
