@@ -10,10 +10,11 @@ set -e
 BUILDDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$BUILDDIR"
 
-echo "=== Submitting homepage, reddit, gitlab (no conflicts) ==="
+echo "=== Submitting homepage, reddit, gitlab, wikipedia (no conflicts) ==="
 sbatch homepage/slurm_homepage.sh
 sbatch reddit/slurm_reddit.sh
 sbatch gitlab/slurm_gitlab.sh
+sbatch wikipedia/slurm_wikipedia.sh
 
 echo ""
 echo "=== Submitting shopping and waiting for its node assignment ==="
