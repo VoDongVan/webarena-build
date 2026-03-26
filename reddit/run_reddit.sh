@@ -10,8 +10,9 @@ echo "=== SSH tunnel: ssh -L 9999:$(hostname):9999 <username>@unity.rc.umass.edu
 
 # PostgreSQL requires its data dir is not group/world-writable
 chmod -R 700 "$WORKDIR/webarena_data/pgsql"
-# Remove stale postmaster.pid if present (prevents postgres startup)
+# Remove stale postmaster.pid and socket lock file if present (prevents postgres startup)
 rm -f "$WORKDIR/webarena_data/pgsql/postmaster.pid"
+rm -f "$WORKDIR/webarena_data/run/postgresql/.s.PGSQL.5432.lock"
 # Everything else should be freely writable
 chmod -R 777 "$WORKDIR/webarena_data/run"
 chmod -R 777 "$WORKDIR/webarena_data/log"
