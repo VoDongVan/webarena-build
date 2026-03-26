@@ -42,3 +42,28 @@ apptainer instance run \
   --bind $(pwd)/webarena_data/magento_generated:/var/www/magento2/generated \
   --env "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
   shopping.sif webarena_shopping
+
+# Wait for MySQL to accept connections
+echo "Waiting for MySQL..."
+for i in $(seq 1 60); do
+    if apptainer exec instance://webarena_shopping \
+         mysql -h127.0.0.1 -umagentouser -pMyPassword -e "SELECT 1" magentodb &>/dev/null 2>&1; then
+        echo "MySQL ready."
+        break
+    fi
+    echo "  attempt $i/60, waiting 5s..."
+    sleep 5
+done
+
+# Update Magento base URL to actual node hostname so SOCKS5 proxy works
+NODE=$(hostname)
+echo "Updating Magento base URL to http://$NODE:7770/ ..."
+apptainer exec instance://webarena_shopping \
+  mysql -h127.0.0.1 -umagentouser -pMyPassword magentodb -e \
+  "UPDATE core_config_data SET value='http://$NODE:7770/' WHERE path LIKE 'web/%base_url%';"
+
+echo "Flushing Magento cache..."
+apptainer exec instance://webarena_shopping \
+  php /var/www/magento2/bin/magento cache:flush
+
+echo "=== Shopping ready at http://$NODE:7770 ==="

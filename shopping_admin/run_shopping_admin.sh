@@ -54,3 +54,28 @@ apptainer exec instance://webarena_shopping_admin \
   supervisord -n -c /etc/supervisord.conf &
 sleep 2
 echo "Waiting for services to become ready..."
+
+# Wait for MySQL to accept connections
+echo "Waiting for MySQL..."
+for i in $(seq 1 60); do
+    if apptainer exec instance://webarena_shopping_admin \
+         mysql -h127.0.0.1 -umagentouser -pMyPassword -e "SELECT 1" magentodb &>/dev/null 2>&1; then
+        echo "MySQL ready."
+        break
+    fi
+    echo "  attempt $i/60, waiting 5s..."
+    sleep 5
+done
+
+# Update Magento base URL to actual node hostname so SOCKS5 proxy works
+NODE=$(hostname)
+echo "Updating Magento base URL to http://$NODE:7780/ ..."
+apptainer exec instance://webarena_shopping_admin \
+  mysql -h127.0.0.1 -umagentouser -pMyPassword magentodb -e \
+  "UPDATE core_config_data SET value='http://$NODE:7780/' WHERE path LIKE 'web/%base_url%';"
+
+echo "Flushing Magento cache..."
+apptainer exec instance://webarena_shopping_admin \
+  php /var/www/magento2/bin/magento cache:flush
+
+echo "=== Shopping Admin ready at http://$NODE:7780 ==="
