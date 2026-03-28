@@ -2,6 +2,9 @@
 
 This directory contains the WebArena environments adapted to run under **Apptainer** on UMass Unity HPC (Docker is forbidden on Unity).
 
+## Problem:
+Docker is not allowed on Umass Unity because of security reasons: many operations in Docker require root permission. Apptainer is a Docker alternative that does not have these security drawbacks, but we cannot run WebArena right away without some setups and configurations.
+
 ## Environments
 
 | Environment | Directory | Port | Apptainer Instance |
