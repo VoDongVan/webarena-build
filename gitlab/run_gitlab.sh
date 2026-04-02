@@ -12,8 +12,10 @@ echo "=== SSH tunnel: ssh -L 8023:$(hostname):8023 <username>@unity.rc.umass.edu
 if [ -d "$WORKDIR/webarena_data/gitlab_data/postgresql/data" ]; then
     chmod 700 "$WORKDIR/webarena_data/gitlab_data/postgresql/data"
 fi
-# Remove stale postmaster.pid (prevents postgres startup)
+# Remove stale PostgreSQL lock files (prevents postgres startup after unclean shutdown)
 rm -f "$WORKDIR/webarena_data/gitlab_data/postgresql/data/postmaster.pid"
+rm -f "$WORKDIR/webarena_data/gitlab_data/postgresql/.s.PGSQL.5432"
+rm -f "$WORKDIR/webarena_data/gitlab_data/postgresql/.s.PGSQL.5432.lock"
 
 # Writable runtime dirs
 chmod -R 755 "$WORKDIR/webarena_data/etc_gitlab"
