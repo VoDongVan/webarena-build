@@ -13,6 +13,11 @@ chmod -R 700 "$WORKDIR/webarena_data/pgsql"
 # Remove stale postmaster.pid and socket lock file if present (prevents postgres startup)
 rm -f "$WORKDIR/webarena_data/pgsql/postmaster.pid"
 rm -f "$WORKDIR/webarena_data/run/postgresql/.s.PGSQL.5432.lock"
+# Remove stale NFS silly-rename files and php-fpm socket/pid (cause php-fpm exit 255 on restart)
+rm -f "$WORKDIR/webarena_data/run/.nfs"* 2>/dev/null || true
+rm -f "$WORKDIR/webarena_data/run/php-fpm"* 2>/dev/null || true
+# Clear Postmill/Symfony cache (stale cache from a prior PHP session causes php-fpm exit 255)
+rm -rf "$WORKDIR/webarena_data/postmill_var/cache/"*
 # Everything else should be freely writable
 chmod -R 777 "$WORKDIR/webarena_data/run"
 chmod -R 777 "$WORKDIR/webarena_data/log"

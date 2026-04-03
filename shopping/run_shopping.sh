@@ -19,6 +19,18 @@ sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/conf_defa
 sed -i 's/listen 80/listen 7770/g' $(pwd)/custom_configs/http_default.conf
 sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/http_default.conf
 
+# Remove stale InnoDB/Aria redo logs and temp files (left by unclean kills)
+# MariaDB recreates these fresh on startup; keeping dirty ones causes crash-recovery loops.
+rm -f $(pwd)/webarena_data/mysql/ib_logfile0
+rm -f $(pwd)/webarena_data/mysql/ib_logfile1
+rm -f $(pwd)/webarena_data/mysql/ibtmp1
+rm -f $(pwd)/webarena_data/mysql/aria_log.00000001
+rm -f $(pwd)/webarena_data/mysql/aria_log_control
+# Remove stale pid files from previous node runs
+rm -f $(pwd)/webarena_data/mysql/*.pid
+# Remove stale MySQL socket
+rm -f $(pwd)/webarena_data/run/mysqld/mysqld.sock
+
 # Copy MySQL data if not already done
 if [ ! -d "$(pwd)/webarena_data/mysql/mysql" ]; then
     echo "Initializing MySQL data from SIF..."
