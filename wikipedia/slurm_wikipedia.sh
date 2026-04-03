@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J webarena_wikipedia
+#SBATCH -J wikipedia
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH -c 2

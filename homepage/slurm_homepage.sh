@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J webarena_homepage
+#SBATCH -J homepage
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH -c 1

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J webarena_gitlab
+#SBATCH -J gitlab
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH -c 2

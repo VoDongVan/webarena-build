@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J webarena_shopping_admin
+#SBATCH -J shopping_admin
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH -c 2
