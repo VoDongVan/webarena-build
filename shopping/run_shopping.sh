@@ -19,17 +19,29 @@ sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/conf_defa
 sed -i 's/listen 80/listen 7770/g' $(pwd)/custom_configs/http_default.conf
 sed -i 's/listen \[::\]:80/listen \[::\]:7770/g' $(pwd)/custom_configs/http_default.conf
 
-# Remove stale InnoDB/Aria redo logs and temp files (left by unclean kills)
-# MariaDB recreates these fresh on startup; keeping dirty ones causes crash-recovery loops.
+# --- Stale file cleanup (SLURM kills leave these; they prevent clean restart) ---
+# MariaDB: redo logs, DDL recovery artifacts, temp files, PIDs, socket
 rm -f $(pwd)/webarena_data/mysql/ib_logfile0
 rm -f $(pwd)/webarena_data/mysql/ib_logfile1
 rm -f $(pwd)/webarena_data/mysql/ibtmp1
 rm -f $(pwd)/webarena_data/mysql/aria_log.00000001
 rm -f $(pwd)/webarena_data/mysql/aria_log_control
-# Remove stale pid files from previous node runs
+rm -f $(pwd)/webarena_data/mysql/ddl_recovery.log
+rm -f $(pwd)/webarena_data/mysql/ddl_recovery-backup.log
 rm -f $(pwd)/webarena_data/mysql/*.pid
-# Remove stale MySQL socket
 rm -f $(pwd)/webarena_data/run/mysqld/mysqld.sock
+rm -f $(pwd)/webarena_data/run/mysqld/mysqld.pid
+# Nginx, cron, supervisord PIDs and sockets
+rm -f $(pwd)/webarena_data/run/nginx.pid
+rm -f $(pwd)/webarena_data/run/crond.pid
+rm -f $(pwd)/webarena_data/run/supervisord.sock
+# NFS silly-rename files (created when files are deleted while still open)
+find $(pwd)/webarena_data/run -name ".nfs*" -delete 2>/dev/null || true
+# Elasticsearch: node lock and all write locks (prevents ES from starting after unclean kill)
+rm -f $(pwd)/webarena_data/esdata/nodes/0/node.lock
+find $(pwd)/webarena_data/esdata -name "write.lock" -delete 2>/dev/null || true
+# Magento: cache regeneration lock
+rm -f $(pwd)/webarena_data/magento_var/.regenerate.lock
 
 # Copy MySQL data if not already done
 if [ ! -d "$(pwd)/webarena_data/mysql/mysql" ]; then

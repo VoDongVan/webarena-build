@@ -10,6 +10,33 @@ echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu
 
 chmod -R 777 "$WORKDIR/webarena_data"
 
+# --- Stale file cleanup (SLURM kills leave these; they prevent clean restart) ---
+# MariaDB: redo logs, DDL recovery artifacts, temp files, PIDs, socket
+rm -f "$WORKDIR/webarena_data/mysql/ib_logfile0"
+rm -f "$WORKDIR/webarena_data/mysql/ib_logfile1"
+rm -f "$WORKDIR/webarena_data/mysql/ibtmp1"
+rm -f "$WORKDIR/webarena_data/mysql/aria_log.00000001"
+rm -f "$WORKDIR/webarena_data/mysql/aria_log_control"
+rm -f "$WORKDIR/webarena_data/mysql/ddl_recovery.log"
+rm -f "$WORKDIR/webarena_data/mysql/ddl_recovery-backup.log"
+rm -f "$WORKDIR/webarena_data/mysql/"*.pid
+rm -f "$WORKDIR/webarena_data/run/mysqld/mysqld.pid"
+rm -f "$WORKDIR/webarena_data/run/mysqld/mysqld.sock"
+# Nginx, cron, supervisord PIDs and sockets
+rm -f "$WORKDIR/webarena_data/run/nginx.pid"
+rm -f "$WORKDIR/webarena_data/run/crond.pid"
+rm -f "$WORKDIR/webarena_data/run/supervisord.sock"
+rm -f "$WORKDIR/webarena_data/container.pid"
+# NFS silly-rename files
+find "$WORKDIR/webarena_data/run" -name ".nfs*" -delete 2>/dev/null || true
+# Elasticsearch: clean both esdata/ and es_data/ (both present from prior runs)
+rm -f "$WORKDIR/webarena_data/esdata/nodes/0/node.lock"
+find "$WORKDIR/webarena_data/esdata" -name "write.lock" -delete 2>/dev/null || true
+rm -f "$WORKDIR/webarena_data/es_data/nodes/0/node.lock"
+find "$WORKDIR/webarena_data/es_data" -name "write.lock" -delete 2>/dev/null || true
+# Magento: cache regeneration lock
+rm -f "$WORKDIR/webarena_data/magento_var/.regenerate.lock"
+
 # Ensure nginx tmp dirs exist (nginx won't start without these)
 mkdir -p "$WORKDIR/webarena_data/nginx/tmp/client_body"
 mkdir -p "$WORKDIR/webarena_data/nginx/tmp/proxy"
