@@ -37,6 +37,15 @@ find "$WORKDIR/webarena_data/es_data" -name "write.lock" -delete 2>/dev/null || 
 # Magento: cache regeneration lock
 rm -f "$WORKDIR/webarena_data/magento_var/.regenerate.lock"
 
+# Copy ES data to local /tmp to avoid NFS file locking issues.
+# NFS (scratch3) does not support fcntl() locks; Java's NativeFSLockFactory
+# throws IOException instead of returning null, so ES crash-loops indefinitely.
+# /tmp on the compute node is local storage — locking works there.
+ES_LOCAL=/tmp/webarena_esdata_shopping_admin
+rm -rf "$ES_LOCAL"
+cp -a "$WORKDIR/webarena_data/esdata/." "$ES_LOCAL/"
+echo "Copied ES data to $ES_LOCAL ($(du -sh "$ES_LOCAL" | cut -f1))"
+
 # Ensure nginx tmp dirs exist (nginx won't start without these)
 mkdir -p "$WORKDIR/webarena_data/nginx/tmp/client_body"
 mkdir -p "$WORKDIR/webarena_data/nginx/tmp/proxy"
@@ -67,7 +76,7 @@ apptainer instance start \
   --bind "$(pwd)/webarena_data/tmp:/tmp" \
   --bind "$(pwd)/webarena_data/log:/var/log" \
   --bind "$(pwd)/webarena_data/run:/run" \
-  --bind "$(pwd)/webarena_data/esdata:/usr/share/java/elasticsearch/data" \
+  --bind "$ES_LOCAL:/usr/share/java/elasticsearch/data" \
   --bind "$(pwd)/webarena_data/eslog:/usr/share/java/elasticsearch/logs" \
   --bind "$(pwd)/webarena_data/es_config:/usr/share/java/elasticsearch/config" \
   --bind "$(pwd)/webarena_data/magento_var:/var/www/magento2/var" \
