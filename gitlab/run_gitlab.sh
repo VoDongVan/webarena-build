@@ -23,13 +23,23 @@ chmod -R 755 "$WORKDIR/webarena_data/log_gitlab"
 chmod -R 777 "$WORKDIR/webarena_data/run"
 chmod -R 777 "$WORKDIR/webarena_data/tmp"
 
+# Copy log_gitlab to local /tmp to avoid NFS file locking issues.
+# svlogd uses flock() on each log directory; NFS doesn't support this reliably,
+# causing "unable to lock directory: temporary failure" crash loops.
+LOG_LOCAL=/tmp/webarena_log_gitlab
+rm -rf "$LOG_LOCAL"
+# Remove any stale lock files from NFS copy before copying
+find "$WORKDIR/webarena_data/log_gitlab" -name "lock" -delete 2>/dev/null || true
+cp -a "$WORKDIR/webarena_data/log_gitlab/." "$LOG_LOCAL/"
+echo "Copied log_gitlab to $LOG_LOCAL ($(du -sh "$LOG_LOCAL" | cut -f1))"
+
 SV="$WORKDIR/custom_configs/sv_run"
 
 apptainer instance start \
   --writable-tmpfs \
   --bind "$WORKDIR/webarena_data/gitlab_data:/var/opt/gitlab" \
   --bind "$WORKDIR/webarena_data/etc_gitlab:/etc/gitlab" \
-  --bind "$WORKDIR/webarena_data/log_gitlab:/var/log/gitlab" \
+  --bind "$LOG_LOCAL:/var/log/gitlab" \
   --bind "$WORKDIR/webarena_data/run:/run" \
   --bind "$WORKDIR/webarena_data/tmp:/tmp" \
   --bind "$SV/alertmanager:/opt/gitlab/sv/alertmanager/run" \
