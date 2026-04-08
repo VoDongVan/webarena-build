@@ -24,12 +24,21 @@ PORT="${2:-7780}"
 BASE="http://$HOST:$PORT"
 INST="webarena_shopping_admin"
 
+# Detect whether we are on the server node (enables local apptainer/process checks)
+LOCAL_NODE=$(hostname)
+ON_SERVER_NODE=false
+if [[ "$LOCAL_NODE" == "$HOST" ]]; then
+    ON_SERVER_NODE=true
+fi
+
 PASS=0
 FAIL=0
+SKIP=0
 admin_token=""  # fetched in section 8, used in sections 6+8
 
 ok()   { echo "  PASS  $1"; (( ++PASS )); }
 fail() { echo "  FAIL  $1"; (( ++FAIL )); }
+skip() { echo "  SKIP  $1 (not on server node — run on $HOST to check)"; (( ++SKIP )); }
 
 http_check() {
     # http_check LABEL URL [EXPECTED_CODE_PREFIX] [BODY_GREP]
@@ -57,13 +66,21 @@ echo "=========================================="
 echo "  WebArena Shopping Admin smoke tests"
 echo "  Target  : $BASE"
 echo "  Instance: $INST"
+echo "  Running on: $LOCAL_NODE"
+if $ON_SERVER_NODE; then
+    echo "  Mode: full (on server node)"
+else
+    echo "  Mode: HTTP-only (not on server node; skipping local checks)"
+fi
 echo "  $(date)"
 echo "=========================================="
 
 # ---- 1. Instance alive -----------------------------------------------
 echo
 echo "--- 1. Apptainer instance ---"
-if apptainer instance list 2>/dev/null | grep -q "$INST"; then
+if ! $ON_SERVER_NODE; then
+    skip "instance list"
+elif apptainer instance list 2>/dev/null | grep -q "$INST"; then
     ok "instance $INST is listed"
 else
     fail "instance $INST not found — is it running?"
@@ -73,68 +90,87 @@ fi
 echo
 echo "--- 2. Supervisord process status ---"
 for svc in cron elasticsearch mysqld nginx php-fpm redis-server; do
-    state=$(apptainer_exec supervisorctl status "$svc" 2>/dev/null | awk '{print $2}' || echo "ERROR")
-    if [[ "$state" == "RUNNING" ]]; then
-        ok "$svc RUNNING"
+    if ! $ON_SERVER_NODE; then
+        skip "$svc"
     else
-        fail "$svc → $state"
+        state=$(apptainer_exec supervisorctl status "$svc" 2>/dev/null | awk '{print $2}' || echo "ERROR")
+        if [[ "$state" == "RUNNING" ]]; then
+            ok "$svc RUNNING"
+        else
+            fail "$svc → $state"
+        fi
     fi
 done
 
 # ---- 3. MySQL connectivity & data ------------------------------------
 echo
 echo "--- 3. MySQL ---"
-if apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
-        -e "SELECT 1" magentodb &>/dev/null 2>&1; then
-    ok "MySQL accepts connections"
+if ! $ON_SERVER_NODE; then
+    skip "MySQL connectivity"
+    skip "MySQL product count"
+    skip "Magento base_url"
 else
-    fail "MySQL not accepting connections"
-fi
+    if apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
+            -e "SELECT 1" magentodb &>/dev/null 2>&1; then
+        ok "MySQL accepts connections"
+    else
+        fail "MySQL not accepting connections"
+    fi
 
-product_count=$(apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
-    -sNe "SELECT COUNT(*) FROM catalog_product_entity" magentodb 2>/dev/null || echo 0)
-if (( product_count > 1000 )); then
-    ok "MySQL product count = $product_count (>1k)"
-else
-    fail "MySQL product count = $product_count (expected >1k)"
-fi
+    product_count=$(apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
+        -sNe "SELECT COUNT(*) FROM catalog_product_entity" magentodb 2>/dev/null || echo 0)
+    if (( product_count > 1000 )); then
+        ok "MySQL product count = $product_count (>1k)"
+    else
+        fail "MySQL product count = $product_count (expected >1k)"
+    fi
 
-base_url=$(apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
-    -sNe "SELECT value FROM core_config_data WHERE path='web/unsecure/base_url' LIMIT 1" \
-    magentodb 2>/dev/null || echo "UNKNOWN")
-if [[ "$base_url" == *"$HOST"* ]]; then
-    ok "Magento base_url = $base_url"
-else
-    fail "Magento base_url = '$base_url' (expected to contain $HOST)"
+    base_url=$(apptainer_exec mysql -h127.0.0.1 -umagentouser -pMyPassword \
+        -sNe "SELECT value FROM core_config_data WHERE path='web/unsecure/base_url' LIMIT 1" \
+        magentodb 2>/dev/null || echo "UNKNOWN")
+    if [[ "$base_url" == *"$HOST"* ]]; then
+        ok "Magento base_url = $base_url"
+    else
+        fail "Magento base_url = '$base_url' (expected to contain $HOST)"
+    fi
 fi
 
 # ---- 4. Redis --------------------------------------------------------
 echo
 echo "--- 4. Redis ---"
-pong=$(apptainer_exec redis-cli ping 2>/dev/null || echo "FAIL")
-if [[ "$pong" == "PONG" ]]; then
-    ok "Redis PONG"
+if ! $ON_SERVER_NODE; then
+    skip "Redis"
 else
-    fail "Redis ping → $pong"
+    pong=$(apptainer_exec redis-cli ping 2>/dev/null || echo "FAIL")
+    if [[ "$pong" == "PONG" ]]; then
+        ok "Redis PONG"
+    else
+        fail "Redis ping → $pong"
+    fi
 fi
 
 # ---- 5. Elasticsearch ------------------------------------------------
 echo
 echo "--- 5. Elasticsearch ---"
-es_status=$(apptainer_exec curl -s http://127.0.0.1:9200/_cluster/health 2>/dev/null \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
-if [[ "$es_status" == "green" || "$es_status" == "yellow" ]]; then
-    ok "ES cluster health = $es_status"
+if ! $ON_SERVER_NODE; then
+    skip "ES cluster health"
+    skip "ES document count"
 else
-    fail "ES cluster health = $es_status"
-fi
+    es_status=$(apptainer_exec curl -s http://127.0.0.1:9200/_cluster/health 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
+    if [[ "$es_status" == "green" || "$es_status" == "yellow" ]]; then
+        ok "ES cluster health = $es_status"
+    else
+        fail "ES cluster health = $es_status"
+    fi
 
-es_docs=$(apptainer_exec curl -s http://127.0.0.1:9200/_cat/count?h=count 2>/dev/null \
-    | tr -d ' \n' || echo 0)
-if (( es_docs > 100 )); then
-    ok "ES document count = $es_docs (>100)"
-else
-    fail "ES document count = $es_docs (expected >100)"
+    es_docs=$(apptainer_exec curl -s http://127.0.0.1:9200/_cat/count?h=count 2>/dev/null \
+        | tr -d ' \n' || echo 0)
+    if (( es_docs > 100 )); then
+        ok "ES document count = $es_docs (>100)"
+    else
+        fail "ES document count = $es_docs (expected >100)"
+    fi
 fi
 
 # ---- 6. HTTP smoke tests ---------------------------------------------
@@ -211,6 +247,6 @@ fi
 # ---- summary ---------------------------------------------------------
 echo
 echo "=========================================="
-echo "  Results: $PASS passed, $FAIL failed"
+echo "  Results: $PASS passed, $FAIL failed, $SKIP skipped"
 echo "=========================================="
 (( FAIL == 0 ))

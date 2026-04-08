@@ -10,6 +10,9 @@ INST="${INSTANCE_SUFFIX:-}"
 echo "=== Shopping Admin starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu ==="
 
+# Record which node we're on so the homepage and test scripts can find us.
+echo "$(hostname)" > "$WORKDIR/../homepage/.shopping_admin_node"
+
 # Stop any stale instance from a previous run. If the job was killed by SIGKILL,
 # the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
 # causing the next `apptainer instance start` to fail with "instance already exists".
