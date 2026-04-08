@@ -13,4 +13,5 @@ echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/wikipedia/run_wikipedia.sh
 
 echo "=== run_wikipedia.sh done, keeping node alive ==="
-sleep infinity
+trap 'echo "=== SIGTERM received, shutting down webarena_wikipedia gracefully ==="; apptainer instance stop webarena_wikipedia; exit 0' TERM INT
+sleep infinity & wait $!

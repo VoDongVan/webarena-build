@@ -13,4 +13,5 @@ echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/shopping_admin/run_shopping_admin.sh
 
 echo "=== run_shopping_admin.sh done, keeping node alive ==="
-sleep infinity
+trap 'echo "=== SIGTERM received, shutting down webarena_shopping_admin gracefully ==="; apptainer instance stop webarena_shopping_admin; exit 0' TERM INT
+sleep infinity & wait $!

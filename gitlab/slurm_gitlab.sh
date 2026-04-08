@@ -12,6 +12,8 @@ echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build
 
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/gitlab/run_gitlab.sh
 
-echo "=== Launching runsvdir (foreground — keeps job alive) ==="
-exec apptainer exec instance://webarena_gitlab \
-  /opt/gitlab/embedded/bin/runsvdir /opt/gitlab/service
+echo "=== Launching runsvdir ==="
+apptainer exec instance://webarena_gitlab \
+  /opt/gitlab/embedded/bin/runsvdir /opt/gitlab/service &
+trap 'echo "=== SIGTERM received, shutting down webarena_gitlab gracefully ==="; apptainer instance stop webarena_gitlab; exit 0' TERM INT
+sleep infinity & wait $!

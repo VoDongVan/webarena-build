@@ -4,9 +4,16 @@
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKDIR"
+DATA_DIR="${WEBARENA_DATA_DIR:-$WORKDIR/webarena_data}"
+INST="${INSTANCE_SUFFIX:-}"
 
 echo "=== GitLab starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 8023:$(hostname):8023 <username>@unity.rc.umass.edu ==="
+
+# Stop any stale instance from a previous run. If the job was killed by SIGKILL,
+# the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
+# causing the next `apptainer instance start` to fail with "instance already exists".
+apptainer instance stop webarena_gitlab 2>/dev/null || true
 
 # PostgreSQL requires its data dir is not group/world-writable
 if [ -d "$WORKDIR/webarena_data/gitlab_data/postgresql/data" ]; then

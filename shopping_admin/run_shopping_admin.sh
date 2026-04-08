@@ -4,16 +4,24 @@
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKDIR"
+DATA_DIR="${WEBARENA_DATA_DIR:-$WORKDIR/webarena_data}"
+INST="${INSTANCE_SUFFIX:-}"
 
 echo "=== Shopping Admin starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu ==="
 
-chmod -R 777 "$WORKDIR/webarena_data"
+# Stop any stale instance from a previous run. If the job was killed by SIGKILL,
+# the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
+# causing the next `apptainer instance start` to fail with "instance already exists".
+apptainer instance stop webarena_shopping_admin 2>/dev/null || true
+
+chmod -R 777 "$DATA_DIR"
 
 # --- Stale file cleanup (SLURM kills leave these; they prevent clean restart) ---
-# MariaDB: redo logs, DDL recovery artifacts, temp files, PIDs, socket
-rm -f "$WORKDIR/webarena_data/mysql/ib_logfile0"
-rm -f "$WORKDIR/webarena_data/mysql/ib_logfile1"
+# MariaDB: DDL recovery artifacts, temp files, PIDs, socket
+# NOTE: do NOT delete ib_logfile0/1 — those are InnoDB redo logs needed for
+# crash recovery after an unclean shutdown. Deleting them causes MySQL to fail
+# to start when data files are dirty (502 on every restart).
 rm -f "$WORKDIR/webarena_data/mysql/ibtmp1"
 rm -f "$WORKDIR/webarena_data/mysql/aria_log.00000001"
 rm -f "$WORKDIR/webarena_data/mysql/aria_log_control"
@@ -36,6 +44,16 @@ rm -f "$WORKDIR/webarena_data/es_data/nodes/0/node.lock"
 find "$WORKDIR/webarena_data/es_data" -name "write.lock" -delete 2>/dev/null || true
 # Magento: cache regeneration lock
 rm -f "$WORKDIR/webarena_data/magento_var/.regenerate.lock"
+
+# Initialize MySQL data directory from SIF if not already done.
+# This is required on first run (or if webarena_data/mysql/ was deleted).
+# Apptainer will abort with a fatal mount error if the bind source doesn't exist.
+if [ ! -d "$WORKDIR/webarena_data/mysql/mysql" ]; then
+    echo "Initializing MySQL data from SIF..."
+    mkdir -p "$WORKDIR/webarena_data/mysql"
+    apptainer exec shopping_admin.sif cp -a /var/lib/mysql/. "$WORKDIR/webarena_data/mysql/"
+    chmod -R 777 "$WORKDIR/webarena_data/mysql"
+fi
 
 # Copy ES data to local /tmp to avoid NFS file locking issues.
 # NFS (scratch3) does not support fcntl() locks; Java's NativeFSLockFactory
@@ -65,17 +83,45 @@ exec supervisord -n -c /etc/supervisord.conf
 EOF
 chmod +x "$(pwd)/custom_configs/start.sh"
 
+# Ensure MySQL log directory exists (needed by custom mysql.ini)
+mkdir -p "$WORKDIR/webarena_data/log/mysql"
+
+# Copy MySQL data to local /tmp to avoid NFS file locking issues.
+# InnoDB uses fcntl() locks on ibdata1; NFS (scratch3) returns EIO (5) for these.
+# /tmp on the compute node is local storage — locking works there.
+MYSQL_LOCAL=/tmp/webarena_mysql_shopping_admin
+rm -rf "$MYSQL_LOCAL"
+cp -a "$WORKDIR/webarena_data/mysql/." "$MYSQL_LOCAL/"
+echo "Copied MySQL data to $MYSQL_LOCAL ($(du -sh "$MYSQL_LOCAL" | cut -f1))"
+
+# Create a local /run equivalent to avoid NFS lock issues for PHP-FPM, nginx, etc.
+# /run bind-mounted from NFS causes "Cannot create lock - I/O error (5)" in PHP-FPM.
+RUN_LOCAL=/tmp/webarena_run_shopping_admin
+rm -rf "$RUN_LOCAL"
+mkdir -p "$RUN_LOCAL/mysqld" "$RUN_LOCAL/nginx" "$RUN_LOCAL/php-fpm" "$RUN_LOCAL/redis"
+chmod 777 "$RUN_LOCAL" "$RUN_LOCAL/mysqld" "$RUN_LOCAL/nginx" "$RUN_LOCAL/php-fpm" "$RUN_LOCAL/redis"
+# .init marks MySQL as already initialized so docker-entrypoint.sh skips mysql_install_db
+touch "$RUN_LOCAL/mysqld/.init"
+
+# Create a local /tmp for the container to avoid NFS lock issues.
+# PHP-FPM creates its accept lock in /tmp; NFS returns EIO (5) for fcntl() locks.
+TMP_LOCAL=/tmp/webarena_tmp_shopping_admin
+rm -rf "$TMP_LOCAL"
+mkdir -p "$TMP_LOCAL"
+chmod 1777 "$TMP_LOCAL"
+
 apptainer instance start \
   --bind "$(pwd)/custom_configs/start.sh:/docker-entrypoint.sh" \
   --bind "$(pwd)/custom_configs/supervisord.conf:/etc/supervisord.conf" \
   --bind "$(pwd)/custom_configs/nginx.conf:/etc/nginx/nginx.conf" \
   --bind "$(pwd)/custom_configs/conf_default.conf:/etc/nginx/conf.d/default.conf" \
+  --bind "$(pwd)/custom_configs/mysql.ini:/etc/supervisor.d/mysql.ini" \
   --bind "$(pwd)/webarena_data/nginx:/var/lib/nginx" \
-  --bind "$(pwd)/webarena_data/mysql:/var/lib/mysql" \
+  --bind "$MYSQL_LOCAL:/var/lib/mysql" \
   --bind "$(pwd)/webarena_data/redis:/var/lib/redis" \
-  --bind "$(pwd)/webarena_data/tmp:/tmp" \
+  --bind "$TMP_LOCAL:/tmp" \
   --bind "$(pwd)/webarena_data/log:/var/log" \
-  --bind "$(pwd)/webarena_data/run:/run" \
+  --bind "$RUN_LOCAL:/run" \
   --bind "$ES_LOCAL:/usr/share/java/elasticsearch/data" \
   --bind "$(pwd)/webarena_data/eslog:/usr/share/java/elasticsearch/logs" \
   --bind "$(pwd)/webarena_data/es_config:/usr/share/java/elasticsearch/config" \

@@ -4,6 +4,7 @@
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKDIR"
+INST="${INSTANCE_SUFFIX:-}"
 
 echo "=== Wikipedia (Kiwix) starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 8888:$(hostname):8888 <username>@unity.rc.umass.edu ==="
@@ -21,6 +22,11 @@ if [ ! -f "$WORKDIR/wikipedia.sif" ]; then
     echo "       Run set_up.sh first."
     exit 1
 fi
+
+# Stop any stale instance from a previous run. If the job was killed by SIGKILL,
+# the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
+# causing the next `apptainer instance start` to fail with "instance already exists".
+apptainer instance stop webarena_wikipedia 2>/dev/null || true
 
 apptainer instance start \
   --bind "$WORKDIR/data:/data" \

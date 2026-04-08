@@ -8,11 +8,23 @@ cd "$WORKDIR"
 echo "=== Reddit (Postmill) starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 9999:$(hostname):9999 <username>@unity.rc.umass.edu ==="
 
+# Stop any stale instance from a previous run. If the job was killed by SIGKILL,
+# the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
+# causing the next `apptainer instance start` to fail with "instance already exists".
+apptainer instance stop webarena_reddit 2>/dev/null || true
+
 # PostgreSQL requires its data dir is not group/world-writable
 chmod -R 700 "$WORKDIR/webarena_data/pgsql"
 # Remove stale postmaster.pid and socket lock file if present (prevents postgres startup)
 rm -f "$WORKDIR/webarena_data/pgsql/postmaster.pid"
 rm -f "$WORKDIR/webarena_data/run/postgresql/.s.PGSQL.5432.lock"
+# Recover corrupted WAL (caused by unclean shutdown / SLURM job kill mid-write)
+if [ -f "$WORKDIR/webarena_data/pgsql/global/pg_control" ]; then
+    echo "=== Running pg_resetwal to recover any corrupted WAL ==="
+    apptainer exec \
+        --bind "$WORKDIR/webarena_data/pgsql:/usr/local/pgsql/data" \
+        reddit.sif /usr/bin/pg_resetwal -f /usr/local/pgsql/data 2>&1 || true
+fi
 # Remove stale NFS silly-rename files and php-fpm socket/pid (cause php-fpm exit 255 on restart)
 rm -f "$WORKDIR/webarena_data/run/.nfs"* 2>/dev/null || true
 rm -f "$WORKDIR/webarena_data/run/php-fpm"* 2>/dev/null || true
@@ -24,12 +36,16 @@ chmod -R 777 "$WORKDIR/webarena_data/log"
 chmod -R 777 "$WORKDIR/webarena_data/tmp"
 chmod -R 777 "$WORKDIR/webarena_data/postmill_var"
 
-# Ensure nginx tmp dirs exist inside /tmp (which is bind-mounted as writable)
-mkdir -p "$WORKDIR/webarena_data/tmp/nginx/client_body"
-mkdir -p "$WORKDIR/webarena_data/tmp/nginx/proxy"
-mkdir -p "$WORKDIR/webarena_data/tmp/nginx/fastcgi"
-mkdir -p "$WORKDIR/webarena_data/tmp/nginx/uwsgi"
-mkdir -p "$WORKDIR/webarena_data/tmp/nginx/scgi"
+# Ensure nginx tmp dirs exist inside /run (bind-mounted from NFS, but nginx uses
+# rename() not flock(), so NFS is safe here). We intentionally do NOT bind-mount
+# NFS over /tmp — php-fpm creates an accept mutex lock in /tmp using flock(),
+# which NFS rejects with EIO. The container's own overlay /tmp is local to the
+# compute node and avoids this.
+mkdir -p "$WORKDIR/webarena_data/run/nginx-tmp/client_body"
+mkdir -p "$WORKDIR/webarena_data/run/nginx-tmp/proxy"
+mkdir -p "$WORKDIR/webarena_data/run/nginx-tmp/fastcgi"
+mkdir -p "$WORKDIR/webarena_data/run/nginx-tmp/uwsgi"
+mkdir -p "$WORKDIR/webarena_data/run/nginx-tmp/scgi"
 mkdir -p "$WORKDIR/webarena_data/run/nginx"
 mkdir -p "$WORKDIR/webarena_data/run/postgresql"
 mkdir -p "$WORKDIR/webarena_data/log/nginx"
@@ -39,10 +55,10 @@ apptainer exec reddit.sif cat /etc/nginx/conf.d/default.conf > "$WORKDIR/custom_
 sed -i 's/listen 80/listen 9999/g' "$WORKDIR/custom_configs/conf_default.conf"
 sed -i 's/listen \[::\]:80/listen \[::\]:9999/g' "$WORKDIR/custom_configs/conf_default.conf"
 
-# Patch main nginx.conf to redirect temp dirs into /tmp (which is bind-mounted writable)
+# Patch main nginx.conf to redirect temp dirs into /run/nginx-tmp/ (NFS-safe for nginx).
 # /var/tmp/nginx does not exist in this SIF, so we must redirect temp paths.
 apptainer exec reddit.sif cat /etc/nginx/nginx.conf > "$WORKDIR/custom_configs/nginx.conf"
-sed -i '/http {/a\  client_body_temp_path /tmp/nginx/client_body;\n  proxy_temp_path /tmp/nginx/proxy;\n  fastcgi_temp_path /tmp/nginx/fastcgi;\n  uwsgi_temp_path /tmp/nginx/uwsgi;\n  scgi_temp_path /tmp/nginx/scgi;' \
+sed -i '/http {/a\  client_body_temp_path /run/nginx-tmp/client_body;\n  proxy_temp_path /run/nginx-tmp/proxy;\n  fastcgi_temp_path /run/nginx-tmp/fastcgi;\n  uwsgi_temp_path /run/nginx-tmp/uwsgi;\n  scgi_temp_path /run/nginx-tmp/scgi;' \
     "$WORKDIR/custom_configs/nginx.conf"
 
 # Re-write start.sh each run
@@ -61,7 +77,6 @@ apptainer instance start \
   --bind "$WORKDIR/webarena_data/run:/run" \
   --bind "$WORKDIR/webarena_data/run:/var/run" \
   --bind "$WORKDIR/webarena_data/log:/var/log" \
-  --bind "$WORKDIR/webarena_data/tmp:/tmp" \
   --bind "$WORKDIR/webarena_data/postmill_var:/var/www/html/var" \
   reddit.sif webarena_reddit
 
