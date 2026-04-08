@@ -136,4 +136,8 @@ echo "Flushing Magento cache..."
 apptainer exec instance://webarena_shopping \
   php /var/www/magento2/bin/magento cache:flush
 
+# Update service discovery file so the homepage and test scripts find this node
+echo "$NODE" > "$(pwd)/../homepage/.shopping_node"
+echo "Updated homepage/.shopping_node → $NODE"
+
 echo "=== Shopping ready at http://$NODE:7770 ==="
