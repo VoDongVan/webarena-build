@@ -10,8 +10,9 @@ INST="${INSTANCE_SUFFIX:-}"
 echo "=== Shopping Admin starting on $(hostname) at $(date) ==="
 echo "=== SSH tunnel: ssh -L 7780:$(hostname):7780 <username>@unity.rc.umass.edu ==="
 
-# Record which node we're on so the homepage and test scripts can find us.
-echo "$(hostname)" > "$WORKDIR/../homepage/.shopping_admin_node"
+# NOTE: .shopping_admin_node is written AFTER Magento is fully ready (see bottom of script).
+# Writing it here would cause the health check to see the node before MySQL/cache are ready,
+# resulting in Playwright timeouts waiting for the login form.
 
 # Stop any stale instance from a previous run. If the job was killed by SIGKILL,
 # the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
@@ -162,5 +163,10 @@ apptainer exec instance://webarena_shopping_admin \
 echo "Flushing Magento cache..."
 apptainer exec instance://webarena_shopping_admin \
   php /var/www/magento2/bin/magento cache:flush
+
+# Write node file only now — health check and BrowserGym will not attempt login until
+# this file appears, ensuring MySQL and cache are fully ready.
+echo "$NODE" > "$(dirname "$0")/../homepage/.shopping_admin_node"
+echo "Updated homepage/.shopping_admin_node → $NODE"
 
 echo "=== Shopping Admin ready at http://$NODE:7780 ==="

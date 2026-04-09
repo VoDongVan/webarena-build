@@ -8,7 +8,8 @@
 #SBATCH -o /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/shopping_admin/slurm_shopping_admin.out
 
 echo "=== webarena_shopping_admin starting on $(hostname) at $(date) ==="
-echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/homepage/.shopping_admin_node
+# NOTE: .shopping_admin_node is written by run_shopping_admin.sh AFTER MySQL and cache are ready.
+# Do NOT write it here — the health check uses it to gate login attempts.
 
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/shopping_admin/run_shopping_admin.sh
 
