@@ -23,18 +23,12 @@ if [ ! -f "$WORKDIR/wikipedia.sif" ]; then
     exit 1
 fi
 
-# Stop any stale instance from a previous run. If the job was killed by SIGKILL,
-# the SLURM trap never fired and the instance pid file remains in ~/.apptainer/instances/,
-# causing the next `apptainer instance start` to fail with "instance already exists".
-apptainer instance stop webarena_wikipedia 2>/dev/null || true
-
-apptainer instance start \
+# Run kiwix-serve directly (no apptainer instance) to avoid cgroup/dbus errors
+# that occur on some nodes when using `apptainer instance start`.
+echo "Launching kiwix-serve on port 8888..."
+apptainer exec \
   --bind "$WORKDIR/data:/data" \
-  "$WORKDIR/wikipedia.sif" webarena_wikipedia
-
-# The SIF's %startscript runs kiwix-serve with no args — launch it explicitly on port 8888
-echo "Instance started. Launching kiwix-serve on port 8888..."
-apptainer exec instance://webarena_wikipedia \
+  "$WORKDIR/wikipedia.sif" \
   kiwix-serve --port 8888 /data/wikipedia_en_all_maxi_2022-05.zim &
 
 echo "Waiting for service to become ready..."
