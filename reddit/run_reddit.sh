@@ -29,13 +29,13 @@ apptainer instance stop $INSTANCE_NAME 2>/dev/null || true
 echo "Wiping and recreating local workspace in $WORKSPACE..."
 rm -rf "$WORKSPACE"
 mkdir -p "$WORKSPACE/pgsql" "$WORKSPACE/run/postgresql" "$WORKSPACE/run/nginx" \
-         "$WORKSPACE/log/nginx" "$WORKSPACE/tmp" "$WORKSPACE/postmill_var" \
+         "$WORKSPACE/log/nginx" "$WORKSPACE/postmill_var" \
          "$(pwd)/custom_configs"
 
 # IMPORTANT: PostgreSQL requires strict 700 permissions on its data dir
 chmod 700 "$WORKSPACE/pgsql"
 # Everything else can be broader
-chmod 777 "$WORKSPACE/run" "$WORKSPACE/log" "$WORKSPACE/tmp" "$WORKSPACE/postmill_var"
+chmod 777 "$WORKSPACE/run" "$WORKSPACE/log" "$WORKSPACE/postmill_var"
 
 # --- 2. Force Extraction from SIF (Gold Source) ---
 echo "Extracting pristine data from $SIF_FILE..."
@@ -82,7 +82,6 @@ apptainer instance start \
   --bind "$WORKSPACE/run:/run" \
   --bind "$WORKSPACE/run:/var/run" \
   --bind "$WORKSPACE/log:/var/log" \
-  --bind "$WORKSPACE/tmp:/tmp" \
   --bind "$WORKSPACE/postmill_var:/var/www/html/var" \
   $SIF_FILE $INSTANCE_NAME
 
@@ -109,8 +108,9 @@ echo "=== Reddit Freshly Deployed ==="
 echo "URL: http://$NODE:$PORT"
 echo "SSH tunnel: ssh -L $PORT:$NODE:$PORT <username>@unity.rc.umass.edu"
 
-# Keep alive for SLURM
-wait
+# Keep the script running so the trap doesn't trigger immediately
+# If running via SLURM, this will keep the allocation alive
+sleep infinity & wait $!
 
 # #!/bin/bash
 # # run_reddit.sh — Start the WebArena Reddit (Postmill) instance.

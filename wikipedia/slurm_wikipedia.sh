@@ -8,7 +8,8 @@
 #SBATCH -o /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/wikipedia/slurm_wikipedia.out
 
 echo "=== webarena_wikipedia starting on $(hostname) at $(date) ==="
-echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/homepage/.wikipedia_node
+# NOTE: .wikipedia_node is written by run_wikipedia.sh AFTER the readiness check passes.
+# Do NOT write it here — tests use it to gate requests.
 
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/wikipedia/run_wikipedia.sh
 

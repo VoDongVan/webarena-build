@@ -184,7 +184,7 @@ else
 fi
 
 http_check "Storefront homepage" "$BASE/"                                   2 "magento\|luma\|shopping"
-http_check "Category page"       "$BASE/women/tops-women.html"              2
+http_check "Category page"       "$BASE/women.html"                         2
 http_check "Search results"      "$BASE/catalogsearch/result/?q=shirt"      2
 http_check "Cart page"           "$BASE/checkout/cart/"                     2
 

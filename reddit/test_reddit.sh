@@ -24,11 +24,20 @@ PORT="${2:-9999}"
 BASE="http://$HOST:$PORT"
 INST="webarena_reddit"
 
+# Detect whether we are on the server node (enables local apptainer/process checks)
+LOCAL_NODE=$(hostname)
+ON_SERVER_NODE=false
+if [[ "$LOCAL_NODE" == "$HOST" ]]; then
+    ON_SERVER_NODE=true
+fi
+
 PASS=0
 FAIL=0
+SKIP=0
 
 ok()   { echo "  PASS  $1"; (( ++PASS )); }
 fail() { echo "  FAIL  $1"; (( ++FAIL )); }
+skip() { echo "  SKIP  $1 (not on server node — run on $HOST to check)"; (( ++SKIP )); }
 
 http_check() {
     # http_check LABEL URL [EXPECTED_CODE_PREFIX] [BODY_GREP]
@@ -56,13 +65,21 @@ echo "=========================================="
 echo "  WebArena Reddit (Postmill) smoke tests"
 echo "  Target  : $BASE"
 echo "  Instance: $INST"
+echo "  Running on: $LOCAL_NODE"
+if $ON_SERVER_NODE; then
+    echo "  Mode: full (on server node)"
+else
+    echo "  Mode: HTTP-only (not on server node; skipping local checks)"
+fi
 echo "  $(date)"
 echo "=========================================="
 
 # ---- 1. Instance alive -----------------------------------------------
 echo
 echo "--- 1. Apptainer instance ---"
-if apptainer instance list 2>/dev/null | grep -q "$INST"; then
+if ! $ON_SERVER_NODE; then
+    skip "instance list"
+elif apptainer instance list 2>/dev/null | grep -q "$INST"; then
     ok "instance $INST is listed"
 else
     fail "instance $INST not found — is it running?"
@@ -72,11 +89,15 @@ fi
 echo
 echo "--- 2. Supervisord process status ---"
 for svc in nginx php-fpm postgres; do
-    state=$(apptainer_exec supervisorctl status "$svc" 2>/dev/null | awk '{print $2}' || echo "ERROR")
-    if [[ "$state" == "RUNNING" ]]; then
-        ok "$svc RUNNING"
+    if ! $ON_SERVER_NODE; then
+        skip "$svc"
     else
-        fail "$svc → $state"
+        state=$(apptainer_exec supervisorctl status "$svc" 2>/dev/null | awk '{print $2}' || echo "ERROR")
+        if [[ "$state" == "RUNNING" ]]; then
+            ok "$svc RUNNING"
+        else
+            fail "$svc → $state"
+        fi
     fi
 done
 
@@ -85,35 +106,42 @@ done
 # socket connections. TCP (127.0.0.1) requires a password.
 echo
 echo "--- 3. PostgreSQL ---"
-if apptainer_exec psql -U postmill -d postmill \
-        -c "SELECT 1" &>/dev/null 2>&1; then
-    ok "PostgreSQL accepts connections (Unix socket)"
+if ! $ON_SERVER_NODE; then
+    skip "PostgreSQL connectivity"
+    skip "PostgreSQL user count"
+    skip "PostgreSQL forum count"
+    skip "PostgreSQL submission count"
 else
-    fail "PostgreSQL not accepting connections"
-fi
+    if apptainer_exec psql -U postmill -d postmill \
+            -c "SELECT 1" &>/dev/null 2>&1; then
+        ok "PostgreSQL accepts connections (Unix socket)"
+    else
+        fail "PostgreSQL not accepting connections"
+    fi
 
-user_count=$(apptainer_exec psql -U postmill -d postmill \
-    -tAc "SELECT COUNT(*) FROM users" 2>/dev/null | tr -d '[:space:]' || echo 0)
-if (( user_count > 0 )); then
-    ok "PostgreSQL user count = $user_count (>0)"
-else
-    fail "PostgreSQL user count = $user_count (expected >0)"
-fi
+    user_count=$(apptainer_exec psql -U postmill -d postmill \
+        -tAc "SELECT COUNT(*) FROM users" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    if (( user_count > 0 )); then
+        ok "PostgreSQL user count = $user_count (>0)"
+    else
+        fail "PostgreSQL user count = $user_count (expected >0)"
+    fi
 
-forum_count=$(apptainer_exec psql -U postmill -d postmill \
-    -tAc "SELECT COUNT(*) FROM forums" 2>/dev/null | tr -d '[:space:]' || echo 0)
-if (( forum_count > 0 )); then
-    ok "PostgreSQL forum count = $forum_count (>0)"
-else
-    fail "PostgreSQL forum count = $forum_count (expected >0)"
-fi
+    forum_count=$(apptainer_exec psql -U postmill -d postmill \
+        -tAc "SELECT COUNT(*) FROM forums" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    if (( forum_count > 0 )); then
+        ok "PostgreSQL forum count = $forum_count (>0)"
+    else
+        fail "PostgreSQL forum count = $forum_count (expected >0)"
+    fi
 
-submission_count=$(apptainer_exec psql -U postmill -d postmill \
-    -tAc "SELECT COUNT(*) FROM submissions" 2>/dev/null | tr -d '[:space:]' || echo 0)
-if (( submission_count > 0 )); then
-    ok "PostgreSQL submission count = $submission_count (>0)"
-else
-    fail "PostgreSQL submission count = $submission_count (expected >0)"
+    submission_count=$(apptainer_exec psql -U postmill -d postmill \
+        -tAc "SELECT COUNT(*) FROM submissions" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    if (( submission_count > 0 )); then
+        ok "PostgreSQL submission count = $submission_count (>0)"
+    else
+        fail "PostgreSQL submission count = $submission_count (expected >0)"
+    fi
 fi
 
 # ---- 4. HTTP smoke tests ---------------------------------------------
@@ -199,6 +227,9 @@ fi
 # ---- summary ---------------------------------------------------------
 echo
 echo "=========================================="
-echo "  Results: $PASS passed, $FAIL failed"
+echo "  Results: $PASS passed, $FAIL failed, $SKIP skipped"
+if (( SKIP > 0 )); then
+    echo "  (re-run on $HOST for full local checks)"
+fi
 echo "=========================================="
 (( FAIL == 0 ))

@@ -38,6 +38,12 @@ for i in $(seq 1 30); do
         echo "Service ready (HTTP $CODE)."
         break
     fi
+    [ $i -eq 30 ] && echo "Wikipedia failed to start." && exit 1
     echo "Attempt $i/30: HTTP $CODE, waiting 5s..."
     sleep 5
 done
+
+# Update service discovery — written only after the service is confirmed healthy
+NODE=$(hostname)
+echo "$NODE" > "$WORKDIR/../homepage/.wikipedia_node"
+echo "=== Wikipedia ready at http://$NODE:8888 ==="

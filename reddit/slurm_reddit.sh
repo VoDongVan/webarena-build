@@ -8,7 +8,8 @@
 #SBATCH -o /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/reddit/slurm_reddit.out
 
 echo "=== webarena_reddit starting on $(hostname) at $(date) ==="
-echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/homepage/.reddit_node
+# NOTE: .reddit_node is written by run_reddit.sh AFTER the readiness check passes.
+# Do NOT write it here — tests use it to gate requests.
 
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/reddit/run_reddit.sh
 

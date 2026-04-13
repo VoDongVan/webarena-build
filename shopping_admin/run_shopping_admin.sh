@@ -31,7 +31,14 @@ rm -rf "$WORKSPACE"
 mkdir -p "$WORKSPACE/mysql" "$WORKSPACE/esdata" "$WORKSPACE/run/mysqld" \
          "$WORKSPACE/run/nginx" "$WORKSPACE/run/php-fpm" "$WORKSPACE/run/redis" \
          "$WORKSPACE/tmp" "$WORKSPACE/log/mysql" "$WORKSPACE/magento_var" \
-         "$WORKSPACE/magento_generated" "$WORKSPACE/nginx_tmp" \
+         "$WORKSPACE/magento_generated" \
+         "$WORKSPACE/nginx_tmp/tmp/client_body" \
+         "$WORKSPACE/nginx_tmp/tmp/proxy" \
+         "$WORKSPACE/nginx_tmp/tmp/fastcgi" \
+         "$WORKSPACE/nginx_tmp/tmp/uwsgi" \
+         "$WORKSPACE/nginx_tmp/tmp/scgi" \
+         "$WORKSPACE/nginx_tmp/logs" \
+         "$WORKSPACE/log/nginx" \
          "$WORKSPACE/redis" "$WORKSPACE/eslog" "$WORKSPACE/es_config" \
          "$(pwd)/custom_configs"
 
@@ -76,7 +83,7 @@ apptainer instance start \
   --bind "$(pwd)/custom_configs/conf_default.conf:/etc/nginx/conf.d/default.conf" \
   --bind "$(pwd)/custom_configs/mysql.ini:/etc/supervisor.d/mysql.ini" \
   --bind "$WORKSPACE/nginx_tmp:/var/lib/nginx" \
-  --bind "$MYSQL_LOCAL:/var/lib/mysql" \
+  --bind "$WORKSPACE/mysql:/var/lib/mysql" \
   --bind "$WORKSPACE/redis:/var/lib/redis" \
   --bind "$WORKSPACE/tmp:/tmp" \
   --bind "$WORKSPACE/log:/var/log" \
@@ -115,6 +122,24 @@ echo "Flushing Magento cache..."
 apptainer exec instance://$INSTANCE_NAME \
   php /var/www/magento2/bin/magento cache:flush
 
+echo "Waiting for Magento HTTP readiness..."
+for i in $(seq 1 60); do
+    code=$(curl -s -o /dev/null -w "%{http_code}" "http://$NODE:$PORT/" || echo 000)
+
+    if [[ "${code:0:1}" == "2" ]]; then
+        echo "Magento HTTP ready (code=$code)"
+        break
+    fi
+
+    echo "Waiting... (HTTP $code)"
+    sleep 5
+
+    if [[ $i -eq 60 ]]; then
+        echo "Magento HTTP readiness timeout"
+        exit 1
+    fi
+done
+
 # Finalize readiness for service discovery
 echo "$NODE" > "$WORKDIR/../homepage/.shopping_admin_node"
 
@@ -122,8 +147,12 @@ echo "=== Shopping Admin Freshly Deployed ==="
 echo "URL: http://$NODE:$PORT"
 echo "SSH tunnel: ssh -L $PORT:$NODE:$PORT <username>@unity.rc.umass.edu"
 
-# Keep alive for SLURM
-wait
+# Keep the script running so the trap doesn't trigger immediately
+# If running via SLURM, this will keep the allocation alive
+sleep infinity & wait $!
+
+
+
 
 # #!/bin/bash
 # # run_shopping_admin.sh — Start the WebArena shopping_admin instance.

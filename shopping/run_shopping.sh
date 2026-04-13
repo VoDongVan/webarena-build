@@ -28,10 +28,16 @@ apptainer instance stop $INSTANCE_NAME 2>/dev/null || true
 
 # Completely wipe and recreate the local workspace
 rm -rf "$WORKSPACE"
-mkdir -p "$WORKSPACE/mysql" "$WORKSPACE/esdata" "$WORKSPACE/run/mysqld" \
+mkdir -p "$WORKSPACE/mysql" "$WORKSPACE/esdata" "$WORKSPACE/eslog" "$WORKSPACE/run/mysqld" \
          "$WORKSPACE/run/nginx" "$WORKSPACE/run/php-fpm" "$WORKSPACE/tmp" \
-         "$WORKSPACE/log/mysql" "$WORKSPACE/magento_var" \
-         "$WORKSPACE/magento_generated" "$WORKSPACE/nginx_tmp" \
+         "$WORKSPACE/log/mysql" "$WORKSPACE/log/nginx" \
+         "$WORKSPACE/magento_var" "$WORKSPACE/magento_generated" \
+         "$WORKSPACE/nginx_tmp/tmp/client_body" \
+         "$WORKSPACE/nginx_tmp/tmp/proxy" \
+         "$WORKSPACE/nginx_tmp/tmp/fastcgi" \
+         "$WORKSPACE/nginx_tmp/tmp/uwsgi" \
+         "$WORKSPACE/nginx_tmp/tmp/scgi" \
+         "$WORKSPACE/nginx_tmp/logs" \
          "$(pwd)/custom_configs"
 
 chmod -R 777 "$WORKSPACE"
@@ -70,6 +76,7 @@ apptainer instance run \
   --bind $(pwd)/custom_configs/mysql.ini:/etc/supervisor.d/mysql.ini \
   --bind "$WORKSPACE/mysql:/var/lib/mysql" \
   --bind "$WORKSPACE/esdata:/usr/share/java/elasticsearch/data" \
+  --bind "$WORKSPACE/eslog:/usr/share/java/elasticsearch/logs" \
   --bind "$WORKSPACE/run:/var/run" \
   --bind "$WORKSPACE/tmp:/tmp" \
   --bind "$WORKSPACE/log:/var/log" \
@@ -109,7 +116,16 @@ echo "Workspace: $WORKSPACE"
 
 # Keep the script running so the trap doesn't trigger immediately
 # If running via SLURM, this will keep the allocation alive
-wait
+sleep infinity & wait $!
+
+
+
+
+
+
+
+
+
 
 # #!/bin/bash
 
