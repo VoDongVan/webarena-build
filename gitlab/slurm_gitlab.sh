@@ -8,7 +8,8 @@
 #SBATCH -o /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/gitlab/slurm_gitlab.out
 
 echo "=== webarena_gitlab starting on $(hostname) at $(date) ==="
-echo "$(hostname)" > /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/homepage/.gitlab_node
+# NOTE: .gitlab_node is written by run_gitlab.sh AFTER the health check passes.
+# Do NOT write it here — tests use it to gate requests.
 
 bash /scratch3/workspace/vdvo_umass_edu-CS696_S26/webarena_build/gitlab/run_gitlab.sh
 

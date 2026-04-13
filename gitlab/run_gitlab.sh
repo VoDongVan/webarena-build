@@ -47,13 +47,18 @@ if [ -d "$WORKSPACE/gitlab_data/postgresql/data" ]; then
     chmod 700 "$WORKSPACE/gitlab_data/postgresql/data"
 fi
 
+# Patch pg_ident.conf: map the HPC user to the 'gitlab' PostgreSQL user.
+# The SIF's pg_ident.conf only maps 'git' -> 'gitlab'; since we run as
+# $USER (not 'git'), peer auth fails without this line.
+echo "gitlab  $USER  gitlab" >> "$WORKSPACE/gitlab_data/postgresql/data/pg_ident.conf"
+
 # Broad permissions for other runtime dirs to avoid service start failures
 chmod -R 777 "$WORKSPACE/run" "$WORKSPACE/tmp" "$WORKSPACE/log_gitlab"
 
 # --- 3. Configuration Setup ---
 # Patch gitlab.rb if necessary to point to the current hostname/port
 # (Optional: Only if your GitLab setup requires an external_url update)
-# sed -i "s|external_url .*|external_url 'http://$NODE:$PORT'|g" "$WORKSPACE/etc_gitlab/gitlab.rb"
+sed -i "s|external_url .*|external_url 'http://$NODE:$PORT'|g" "$WORKSPACE/etc_gitlab/gitlab.rb"
 
 # --- 4. Start the Fresh Instance ---
 echo "Starting Apptainer instance..."
@@ -81,7 +86,9 @@ apptainer instance start \
   --bind "$SV/sidekiq:/opt/gitlab/sv/sidekiq/run" \
   $SIF_FILE $INSTANCE_NAME
 
-echo "Instance started. Omnibus services are initializing..."
+echo "Instance started. Launching Omnibus services via runsvdir..."
+apptainer exec instance://$INSTANCE_NAME \
+  /opt/gitlab/embedded/bin/runsvdir -P /opt/gitlab/service &
 
 # --- 5. Service Readiness ---
 echo "Waiting for GitLab to respond on http://$NODE:$PORT ..."
@@ -104,7 +111,12 @@ echo "URL: http://$NODE:$PORT"
 echo "SSH tunnel: ssh -L $PORT:$NODE:$PORT <username>@unity.rc.umass.edu"
 
 # Keep alive for SLURM
-wait
+sleep infinity & wait $!
+
+
+
+
+
 
 # #!/bin/bash
 # # run_gitlab.sh — Start the WebArena GitLab instance.
