@@ -1,271 +1,171 @@
-# WebArena GitLab — Setup Guide (Unity HPC)
+# WebArena GitLab
 
-This directory sets up the **GitLab** environment used by WebArena, adapted to run
-under **Apptainer** on UMass Unity HPC. Unity forbids Docker, so the CMU-provided Docker image
-(`gitlab-populated-final-port8023.tar`) must be converted to a SIF and run rootlessly.
+Runs the WebArena GitLab environment (GitLab Omnibus) as a rootless Apptainer container inside a SLURM job.
 
 - **Port:** 8023
-- **Apptainer instance name:** `webarena_gitlab`
-- **URL:** `http://localhost:8023/explore`
-- **Login:** username `root`, password `webarena1234!`
+- **Apptainer instance:** `webarena_gitlab`
+- **URL:** `http://<node>:8023/`
+- **Login:** `root` / `webarena1234!`
 
 ---
 
-## Prerequisites
+## Files
 
-- You must be on a **compute node** (not a login node): `salloc -p cpu ...`
-- Apptainer must be available (pre-installed on Unity)
-- `gitlab.sif` must be present (run `download.sh` if not — it builds the SIF from the tar archive)
+| File | Purpose |
+|---|---|
+| `download.sh` | Converts the Docker tar archive to `gitlab.sif` |
+| `set_up.sh` | One-time setup (run after download) |
+| `run_gitlab.sh` | Starts the service; called by the SLURM script |
+| `slurm_gitlab.sh` | SLURM batch wrapper (submit with `sbatch`) |
+| `test_gitlab.sh` | Smoke test |
+| `custom_configs/sv_run/` | Patched runit service run scripts (see below) |
 
 ---
 
 ## First-Time Setup
 
-Run **once** per cluster filesystem location:
+From a compute node:
 
 ```bash
-bash set_up.sh
+bash download.sh    # converts Docker tar → gitlab.sif (takes ~10 min)
+bash set_up.sh      # prepares custom_configs/
 ```
 
-This does the following in order:
-
-1. Verifies `gitlab.sif` is present
-2. Creates `webarena_data/` directory structure
-3. Extracts writable data out of the SIF (`/var/opt/gitlab/`, `/etc/gitlab/`, `/var/log/gitlab/`)
-4. Pre-patches `external_url` in `gitlab.rb` to `http://localhost:8023`
-5. Generates `run_gitlab.sh` and `slurm_gitlab.sh`
-6. Performs first boot and runs `gitlab-ctl reconfigure`
-
-All extraction steps are **idempotent** — re-running `set_up.sh` skips steps already done.
-
-> **Note:** Step 3 (data extraction) can take 5–15 minutes. GitLab omnibus is a large image.
+After setup, start the service with `sbatch slurm_gitlab.sh` or via `bash ../../launch_all.sh`.
 
 ---
 
-## Starting GitLab (After Setup)
+## How It Starts (run_gitlab.sh)
 
-**Interactive** (current node):
-```bash
-bash run_gitlab.sh
-# Then in a second terminal on the same node:
-apptainer exec instance://webarena_gitlab \
-  /opt/gitlab/embedded/bin/runsvdir /opt/gitlab/service
-```
-
-**SLURM batch job** (recommended — dedicated node, keeps running after you disconnect):
-```bash
-sbatch slurm_gitlab.sh
-```
-
-Check which node the job landed on:
-```bash
-squeue --me
-# or
-scontrol show job <jobid> | grep NodeList
-```
-
----
-
-## Stopping GitLab
-
-```bash
-# If running interactively:
-apptainer instance stop webarena_gitlab
-
-# If running via SLURM:
-scancel <jobid>
-```
-
----
-
-## Accessing from Your Local Machine
-
-Once the job is running and you know the node name (e.g. `cpu021`):
-
-```bash
-ssh -i ~/.ssh/unity-privkey.key -L 8023:<node-hostname>:8023 vdvo_umass_edu@unity.rc.umass.edu
-```
-
-Then open `http://localhost:8023/explore` in your browser.
-
----
-
-## Directory Layout
+Each job start extracts a fresh copy of all GitLab data from the read-only SIF to `/tmp` on the compute node's local SSD:
 
 ```
-gitlab/
-├── set_up.sh                              # One-time setup script
-├── run_gitlab.sh                          # Start script (start instance only)
-├── slurm_gitlab.sh                        # SLURM batch wrapper (start + runsvdir foreground)
-├── download.sh                            # Builds gitlab.sif from tar archive
-├── gitlab.sif                             # Built Apptainer image
-├── gitlab-populated-final-port8023.tar    # Source Docker image
-├── custom_configs/
-│   └── sv_run/                            # Patched runit service run scripts (see below)
-└── webarena_data/                         # Extracted writable data (gitignored)
-    ├── gitlab_data/                       # /var/opt/gitlab (postgres, redis, repos)
-    ├── etc_gitlab/                        # /etc/gitlab (config: gitlab.rb)
-    ├── log_gitlab/                        # /var/log/gitlab (service logs)
-    ├── run/                               # /run (runtime sockets/pids)
-    └── tmp/                               # /tmp
+/tmp/webarena_runtime_gitlab/
+├── gitlab_data/    ← /var/opt/gitlab  (PostgreSQL, Redis, repositories)
+├── etc_gitlab/     ← /etc/gitlab       (gitlab.rb config)
+├── log_gitlab/     ← /var/log/gitlab   (service logs)
+├── run/            ← /run
+└── tmp/            ← /tmp
 ```
+
+After extraction, `run_gitlab.sh`:
+1. Fixes PostgreSQL permissions (`chmod 700` on the data dir)
+2. Appends the HPC user → `gitlab` mapping to `pg_ident.conf` (see issue #8 below)
+3. Patches `external_url` in `gitlab.rb` to `http://<current-node>:8023`
+4. Starts the Apptainer instance with all directories bind-mounted
+5. Launches `runsvdir` (GitLab's runit service supervisor)
+6. Polls `/-/health` up to 60 times (10 min) until GitLab responds HTTP 200
+7. Writes `homepage/.gitlab_node` to signal readiness
+
+When the SLURM job ends, a `trap` removes the `/tmp` workspace and stops the instance.
+
+**Why extract to /tmp each time?** scratch3 (NFS) does not support POSIX `fcntl()` locks. PostgreSQL and several GitLab services use file locking; they crash-loop on NFS. The compute node's `/tmp` is local SSD and supports all locking correctly. The fresh extraction also guarantees a clean state on every start.
 
 ---
 
 ## Service Stack
 
-Managed by **runit** (`runsvdir`):
+GitLab Omnibus is managed by **runit** (`runsvdir /opt/gitlab/service`):
 
-| Service | Notes |
+| Service | Role |
 |---|---|
-| `postgresql` | GitLab's bundled PostgreSQL, socket at `/var/opt/gitlab/postgresql/` |
-| `redis` | In-memory cache, socket at `/var/opt/gitlab/redis/redis.socket` |
-| `gitlab-workhorse` | HTTP proxy, forwards to Puma via Unix socket |
-| `puma` | Rails app server |
-| `nginx` | Serves GitLab UI on port 8023 |
+| `postgresql` | Database (Unix socket only — no TCP conflicts with other services) |
+| `redis` | Session cache (port 0, Unix socket) |
+| `puma` | Rails application server |
+| `gitlab-workhorse` | HTTP proxy between nginx and Puma |
+| `nginx` | Serves port 8023 |
 | `sidekiq` | Background job processor |
 | `gitaly` | Git RPC service |
 | `gitlab-kas` | Kubernetes agent server |
-| `alertmanager`, `prometheus`, `gitlab-exporter`, `postgres-exporter`, `redis-exporter` | Monitoring stack |
+| `alertmanager`, `prometheus`, `gitlab-exporter`, `postgres-exporter`, `redis-exporter` | Monitoring |
 
-Configuration: `/etc/gitlab/gitlab.rb` (bind-mounted from `webarena_data/etc_gitlab/`)
+GitLab uses Unix sockets for PostgreSQL and Redis internally — it has **zero TCP port conflicts** with any other WebArena service and can run on the same node as any of them.
 
 ---
 
-## Issues Encountered and How They Were Fixed
+## Issues Solved and How
 
 ### 1. `%startscript` is empty — runit never launches
 
-**Problem:** Same Docker-conversion artifact as the other WebArena images. `apptainer instance start`
-runs `%startscript`, which is empty, so the instance starts but no services launch.
+The Docker-to-SIF conversion leaves `%startscript` empty. `apptainer instance start` runs `%startscript`, which does nothing, so the instance comes up but no services start.
 
-**Fix:** After `apptainer instance start`, explicitly launch runsvdir in the foreground:
+**Fix:** After `apptainer instance start`, explicitly launch `runsvdir` as a foreground process inside the instance:
 ```bash
-exec apptainer exec instance://webarena_gitlab \
-  /opt/gitlab/embedded/bin/runsvdir /opt/gitlab/service
+apptainer exec instance://webarena_gitlab \
+  /opt/gitlab/embedded/bin/runsvdir -P /opt/gitlab/service &
 ```
 
-Note: use `runsvdir` directly, **not** `runsvdir-start` (see issue #2).
+---
+
+### 2. `runsvdir-start` fails — HPC blocks ulimit and `/proc/sys` writes
+
+`runsvdir-start` (the wrapper that runit ships) tries to `ulimit -n` and write `/proc/sys/fs/file-max`. Both are blocked on HPC nodes with "Operation not permitted". The wrapper exits before ever calling `runsvdir`.
+
+**Fix:** Call `runsvdir` directly, bypassing `runsvdir-start`.
 
 ---
 
-### 2. `runsvdir-start` fails — ulimit and `/proc/sys` not permitted on HPC
+### 3. runit `supervise/lock` — service directories are read-only
 
-**Problem:** The `runsvdir-start` wrapper script tries to raise ulimits and write to
-`/proc/sys/fs/file-max`. Both fail on HPC with "Operation not permitted" / "Permission denied",
-causing the script to exit before it calls `runsvdir`.
+runit's `runsv` needs to write `supervise/lock` and `supervise/status` inside each service dir (e.g. `/opt/gitlab/sv/nginx/supervise/`). These dirs are inside the immutable SIF.
 
-**Fix:** Call `runsvdir /opt/gitlab/service` directly, bypassing `runsvdir-start`.
-
----
-
-### 3. runit `supervise/lock` — read-only filesystem
-
-**Problem:** runit's `runsv` process needs to write `supervise/lock` and `supervise/status`
-files inside each service directory (e.g. `/opt/gitlab/sv/nginx/supervise/`). These directories
-are inside the read-only SIF.
-
-**Fix:** Add `--writable-tmpfs` to `apptainer instance start`. This overlays an in-memory
-writable tmpfs on top of the SIF, allowing runit to write anywhere it needs without enumerating
-every service directory.
+**Fix:** `--writable-tmpfs` on `apptainer instance start`. This overlays an in-memory tmpfs on top of the SIF so runit can write anywhere inside the container without bind-mounting every individual service dir.
 
 ---
 
 ### 4. `chpst: fatal: unable to setgroups` — service run scripts switch users
 
-**Problem:** Every GitLab service run script uses `chpst -u <user>:<user> -U <user>:<user>` to
-drop privileges to a service-specific Unix user (`git`, `gitlab-psql`, `gitlab-redis`, etc.).
-The `setgroups` syscall this requires is blocked in rootless Apptainer on HPC.
+Every GitLab runit script uses `chpst -u <user>:<user>` to drop privileges to a service-specific Unix user (`git`, `gitlab-psql`, etc.). The `setgroups` syscall this requires is blocked in rootless Apptainer on HPC.
 
-**Fix:** Extract all affected run scripts, remove the `-u` / `-U` flags (and any `chown` lines),
-and bind-mount the patched versions back over the originals. The patched scripts live in
-`webarena_data/sv_run/` and are bind-mounted in `run_gitlab.sh` as:
-```
---bind webarena_data/sv_run/postgresql:/opt/gitlab/sv/postgresql/run
-# ... (one line per service)
-```
-
-Services patched: `alertmanager`, `gitaly`, `gitlab-exporter`, `gitlab-kas`,
-`gitlab-workhorse`, `postgres-exporter`, `postgresql`, `prometheus`, `puma`,
-`redis`, `redis-exporter`, `sidekiq`.
-
-Services **not** patched (no user-switching): `logrotate`, `nginx`, `sshd`.
+**Fix:** Extract all affected run scripts, strip the `-u`/`-U` flags, and bind-mount the patched versions from `custom_configs/sv_run/` over the originals. Services patched: `alertmanager`, `gitaly`, `gitlab-exporter`, `gitlab-kas`, `gitlab-workhorse`, `postgres-exporter`, `postgresql`, `prometheus`, `puma`, `redis`, `redis-exporter`, `sidekiq`.
 
 ---
 
 ### 5. `external_url` hardcoded to CMU hostname
 
-**Problem:** The pre-populated image has an `external_url` pointing to the original deployment
-hostname. GitLab uses this URL to generate absolute links and verify requests.
+The pre-populated image has `external_url` pointing to CMU's deployment server. GitLab uses this URL for all absolute links and request validation.
 
-**Fix:** Before first boot, patch `/etc/gitlab/gitlab.rb` (extracted to `webarena_data/etc_gitlab/`):
+**Fix:** Each startup patches `gitlab.rb` to `http://<current-node>:8023` before starting the instance:
 ```bash
-sed -i "s|^external_url.*|external_url 'http://localhost:8023'|" webarena_data/etc_gitlab/gitlab.rb
+sed -i "s|external_url .*|external_url 'http://$NODE:$PORT'|g" "$WORKSPACE/etc_gitlab/gitlab.rb"
 ```
-Then run `gitlab-ctl reconfigure` inside the running instance to apply the change.
+No `gitlab-ctl reconfigure` is needed — `run_gitlab.sh` uses a fresh extracted copy on every start.
 
 ---
 
-### 6. PostgreSQL stale `postmaster.pid`
+### 6. PostgreSQL stale `postmaster.pid` (historical)
 
-**Problem:** The extracted PostgreSQL data dir contains a `postmaster.pid` from when it was
-running inside Docker during image creation. If this file exists, postgres refuses to start.
+The original setup kept data on NFS. After an unclean shutdown, the stale `postmaster.pid` prevented postgres from starting.
 
-**Fix:** Remove `postmaster.pid` before each start:
+**Resolved by fresh-state design:** Since the data is extracted fresh from the SIF on every start, no stale pid files survive between runs.
+
+---
+
+### 7. PostgreSQL requires 700 permissions on data directory
+
+PostgreSQL refuses to start if the data dir is group- or world-writable.
+
+**Fix:** After extraction, before starting the instance:
 ```bash
-rm -f webarena_data/gitlab_data/postgresql/data/postmaster.pid
+chmod 700 "$WORKSPACE/gitlab_data/postgresql/data"
 ```
 
 ---
 
-### 7. PostgreSQL requires data directory is not group/world-writable
+### 8. `Peer authentication failed for user "gitlab"` — HPC user ≠ `git`
 
-**Problem:** PostgreSQL refuses to start if the data directory has group or world write
-permissions.
+GitLab's `pg_hba.conf` uses peer authentication. The original `pg_ident.conf` only maps OS user `git` → DB user `gitlab`. Services now run as the HPC user (e.g. `vdvo_umass_edu`), so peer auth fails.
 
-**Fix:** `chmod 700 webarena_data/gitlab_data/postgresql/data`
-
----
-
-### 8. `Peer authentication failed for user "gitlab"` — Puma can't connect to PostgreSQL
-
-**Problem:** PostgreSQL's `pg_hba.conf` uses peer authentication for all local connections,
-mapped via `pg_ident.conf`. The original mapping only allows OS user `git` to connect as DB
-user `gitlab`. Since services now run as the HPC user (`vdvo_umass_edu`) instead of `git`,
-Puma's database connection is rejected.
-
-**Fix:** Add a line to `webarena_data/gitlab_data/postgresql/data/pg_ident.conf`:
-```
-gitlab  vdvo_umass_edu  gitlab
-```
-Then reload PostgreSQL:
+**Fix:** After extraction, append the HPC user mapping before starting:
 ```bash
-apptainer exec instance://webarena_gitlab \
-  /opt/gitlab/embedded/bin/pg_ctl reload -D /var/opt/gitlab/postgresql/data
+echo "gitlab  $USER  gitlab" >> "$WORKSPACE/gitlab_data/postgresql/data/pg_ident.conf"
 ```
-This is a one-time fix already applied to the extracted data — no action needed on future starts.
+This runs automatically on every start so it works regardless of which HPC user submits the job.
 
 ---
 
-### 9. Port 8023 — no patching needed
+### 9. NFS lock failures (historical)
 
-Unlike the shopping (7770/7780) and reddit (9999) environments, GitLab's internal nginx
-is already configured to listen on port 8023 in the Docker image. No port patching required.
+The original setup bind-mounted log and data directories from NFS. `svlogd` (runit's logger) uses `flock()` on log dirs; NFS returns errors for these, causing "unable to lock directory" crash loops in every service.
 
----
-
-## 502 Bad Gateway Recovery
-
-If GitLab shows HTTP 502 errors after starting, check the logs:
-
-```bash
-# Check what puma is doing
-tail -30 webarena_data/log_gitlab/puma/current
-
-# Check what workhorse is doing
-tail -20 webarena_data/log_gitlab/gitlab-workhorse/current
-
-# Remove stale postgres lock file and restart if postgres crashed
-rm -f webarena_data/gitlab_data/postgresql/data/postmaster.pid
-apptainer exec instance://webarena_gitlab gitlab-ctl restart postgresql
-```
+**Resolved by fresh-state design:** Everything runs from `/tmp` (local SSD). No NFS paths are bind-mounted into the running container.

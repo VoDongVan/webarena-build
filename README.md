@@ -1,112 +1,213 @@
 # WebArena Build — Unity HPC
 
-This directory contains the WebArena environments adapted to run under **Apptainer** on UMass Unity HPC (Docker is forbidden on Unity).
+Deployment system for the [WebArena](https://github.com/web-arena-x/webarena) AI agent benchmark on UMass Unity HPC. Runs six web services as Apptainer containers inside SLURM batch jobs.
 
-## Problem:
-Docker is not allowed on Umass Unity because of security reasons: many operations in Docker require root permission. Apptainer is a Docker alternative that does not have these security drawbacks, but we cannot run WebArena right away without some setups and configurations.
+Unity forbids Docker (most Docker operations require root). Apptainer is the HPC-approved alternative: it runs containers rootlessly by mapping the container user to the submitting HPC user.
 
-## Environments
+---
 
-| Environment | Directory | Port | Apptainer Instance |
+## Services
+
+| Service | Directory | Port | SLURM resources |
 |---|---|---|---|
-| Magento storefront | `shopping/` | 7770 | `webarena_shopping` |
-| Magento admin panel | `shopping_admin/` | 7780 | `webarena_shopping_admin` |
-| Reddit (Postmill forum) | `reddit/` | 9999 | `webarena_reddit` |
-| GitLab | `gitlab/` | 8023 | `webarena_gitlab` |
-
-See the `README.md` in each subdirectory for first-time setup instructions.
+| Magento storefront | `shopping/` | 7770 | 2 CPU / 16 GB |
+| Magento admin panel | `shopping_admin/` | 7780 | 2 CPU / 16 GB |
+| Reddit (Postmill) | `reddit/` | 9999 | 2 CPU / 16 GB |
+| GitLab | `gitlab/` | 8023 | 2 CPU / 16 GB |
+| Wikipedia (Kiwix) | `wikipedia/` | 8888 | 2 CPU / 8 GB |
+| Homepage (Flask) | `homepage/` | 4399 | 1 CPU / 4 GB |
 
 ---
 
-## Running Both Servers Simultaneously
+## Quick Start
 
-Shopping and shopping_admin **cannot run on the same compute node** — both use MySQL on port 3306 and Elasticsearch on port 9200. Run each on its own node using SLURM.
+### 1. First-time setup (once per service)
 
-### Start both
-
-Submit each as a separate batch job:
+Each service directory has a `set_up.sh` that builds the Apptainer SIF from the Docker tar archive and prepares static config files. Run these from a compute node (`salloc -p cpu -c 4 --mem=32G`):
 
 ```bash
-sbatch shopping/slurm_shopping.sh
-sbatch shopping_admin/slurm_shopping_admin.sh
+bash shopping/set_up.sh
+bash shopping_admin/set_up.sh
+bash reddit/set_up.sh
+bash gitlab/set_up.sh
+bash wikipedia/set_up.sh
+# homepage needs no setup — it's a plain Python app
 ```
 
-Each script allocates a CPU node, starts the Apptainer instance, then runs `sleep infinity` to keep the node alive. Check which nodes were assigned:
+Each `set_up.sh` only needs to run once. It is safe to re-run (idempotent).
+
+### 2. Launch all services
+
+From the login node or any compute node:
 
 ```bash
-squeue -u $USER --format="%i %j %N %T"
+bash launch_all.sh
 ```
 
-Verify both are serving HTTP (from any node on the cluster, including your current session):
+This submits six SLURM batch jobs — one per service. Shopping and shopping_admin are automatically placed on **different nodes** (they share ports 3306 and 9200) and the script waits for that assignment before submitting the second job.
+
+Check job status:
 
 ```bash
-curl -s -o /dev/null -w "shopping HTTP: %{http_code}\n" http://<shopping-node>:7770
-curl -s -o /dev/null -w "shopping_admin HTTP: %{http_code}\n" http://<shopping-admin-node>:7780
+squeue -u $USER
 ```
 
-HTTP 302 is the expected healthy response (Magento redirects root to the storefront/login).
+Services take 2–10 minutes to become healthy after the job starts (GitLab takes the longest). The homepage dashboard shows live status once all `.node` files have been written.
 
-### Access from your laptop
-
-A single SSH command can tunnel both ports simultaneously:
+### 3. Access from your laptop
 
 ```bash
-ssh -L 7770:<shopping-node>:7770 -L 7780:<shopping-admin-node>:7780 -L 9999:<reddit-node>:9999 -L 8023:<gitlab-node>:8023 <username>@unity.rc.umass.edu
+bash connect.sh <your-unity-username>
 ```
 
-The Unity login node has network access to all compute nodes and acts as a relay for both tunnels. Then open:
-- Shopping storefront: `http://localhost:7770`
-- Admin panel: `http://localhost:7780/admin`
-- GitLab: `http://localhost:8023/explore`
+This script SSHes to Unity, reads which compute nodes each service landed on, opens a SOCKS5 proxy on `localhost:1080`, and prints the homepage URL and browser setup instructions. Configure Firefox or Chrome to route traffic through the proxy, then open the homepage.
 
-### Stop both
+Alternatively, build an SSH tunnel manually using the node names from `squeue`.
+
+### 4. Stop all services
 
 ```bash
-scancel <shopping-job-id>
-scancel <shopping-admin-job-id>
+bash stop_all.sh
 ```
 
-`scancel` ends the `sleep infinity`, releases the node, and kills the Apptainer instance with it.
-
-To stop one instance without releasing the node (e.g. to restart it):
-```bash
-ssh <node-hostname> "apptainer instance stop webarena_shopping"
-# or
-ssh <node-hostname> "apptainer instance stop webarena_shopping_admin"
-```
-
-### Check all running jobs
+Or cancel individual jobs:
 
 ```bash
-squeue -u $USER --format="%i %j %N %T %l %M"
+scancel <job-id>
 ```
 
 ---
 
-## SLURM Job Scripts
+## How It Works
 
-| Script | Purpose |
-|---|---|
-| `shopping/slurm_shopping.sh` | Runs `webarena_shopping` on a CPU node |
-| `shopping_admin/slurm_shopping_admin.sh` | Runs `webarena_shopping_admin` on a CPU node |
-| `reddit/slurm_reddit.sh` | Runs `webarena_reddit` on a CPU node |
-| `gitlab/slurm_gitlab.sh` | Runs `webarena_gitlab` on a CPU node |
+### Fresh-state design
 
-All request: 4 CPUs, 32 GB RAM, `cpu` partition, 8-hour time limit.
+Every `run_*.sh` script extracts a **pristine copy** of all database and state data directly from the read-only SIF image into `/tmp` on the compute node's local SSD at startup. The container is then started with those `/tmp` paths bind-mounted over the original paths.
+
+```
+SIF (read-only gold source)
+  ↓  cp -a  (at job start)
+/tmp/webarena_runtime_<svc>/   ← local SSD, writable
+  ↑  bind-mounted into container
+```
+
+This means:
+- Every job start produces a clean, reproducible environment.
+- No persistent `webarena_data/` directories need to exist or be maintained.
+- NFS lock failures are eliminated (see below).
+
+When the SLURM job ends (normally or via `scancel`), the cleanup trap removes the `/tmp` workspace.
+
+### Why /tmp instead of NFS (scratch3)
+
+The NFS filesystem (`scratch3`) does not support POSIX `fcntl()` byte-range locks. Several services require file locking:
+
+| Service | Lock type | Result on NFS |
+|---|---|---|
+| MySQL / InnoDB | `fcntl()` on `ibdata1` | `EIO` (I/O error), mysqld crashes |
+| Elasticsearch | `NativeFSLockFactory` | `IOException`, crash-loop |
+| PHP-FPM | `flock()` accept mutex in `/tmp` | `EIO`, fpm exits 255 |
+
+The compute nodes' local `/tmp` (SSD, ~196 GB) supports all locking mechanisms correctly.
+
+### Service discovery
+
+After each service becomes healthy, its `run_*.sh` script writes the compute node's hostname to `homepage/.<svc>_node` (e.g. `homepage/.shopping_node`). The homepage Flask app reads these files to generate links. The test suite (`run_all_tests.sh`) and `connect.sh` also read them.
+
+Node files are deleted at the start of `launch_all.sh` so stale hostnames from a previous run are never shown.
+
+### SLURM keep-alive
+
+Each SLURM script ends with `sleep infinity & wait $!` and a `trap` on `SIGTERM`/`SIGINT` that stops the Apptainer instance and cleans up `/tmp`. When `scancel` is called, SLURM sends `SIGTERM` to the batch script, which triggers this cleanup.
 
 ---
 
-## Checking Service Health
+## Running Tests
 
-Service logs are on the shared filesystem and readable from any node:
+After services are up, smoke-test all of them at once:
 
 ```bash
-# supervisord status for shopping
-tail -30 shopping/webarena_data/log/supervisord.log
-
-# supervisord status for shopping_admin
-tail -30 shopping_admin/webarena_data/log/supervisord.log
-
-# Magento exception log (shopping)
-tail -50 shopping/webarena_data/magento_var/log/exception.log
+bash run_all_tests.sh
 ```
+
+Or test a single service by passing its node hostname:
+
+```bash
+bash shopping/test_shopping.sh <node-hostname>
+bash gitlab/test_gitlab.sh <node-hostname>
+# etc.
+```
+
+Tests read the `.node` files automatically if no hostname is given. They skip Apptainer-internal checks when run from a different node (remote-node mode).
+
+---
+
+## Directory Layout
+
+```
+webarena_build/
+├── launch_all.sh          # Submit all six SLURM jobs
+├── stop_all.sh            # Cancel all running WebArena jobs
+├── run_all_tests.sh       # Smoke-test all services
+├── connect.sh             # Open SOCKS5 proxy and print homepage URL (run locally)
+├── health_check.sh        # Poll all services until healthy (used by baseline scripts)
+├── shopping/              # Magento storefront (port 7770)
+├── shopping_admin/        # Magento admin panel (port 7780)
+├── reddit/                # Postmill forum (port 9999)
+├── gitlab/                # GitLab (port 8023)
+├── wikipedia/             # Kiwix Wikipedia mirror (port 8888)
+└── homepage/              # Flask dashboard + service discovery files
+```
+
+Each service directory contains:
+
+```
+<service>/
+├── download.sh            # Download Docker tar and convert to SIF
+├── set_up.sh              # One-time setup (build SIF, prep static configs)
+├── run_<svc>.sh           # Start the service (called by the SLURM script)
+├── slurm_<svc>.sh         # SLURM batch wrapper
+├── test_<svc>.sh          # Smoke test
+├── custom_configs/        # Config files that are bind-mounted over SIF paths
+├── <svc>.sif              # Apptainer image (built by set_up.sh / download.sh)
+└── webarena_data/         # Static data used by set_up.sh (not used at runtime)
+```
+
+---
+
+## Credentials
+
+| Service | URL path | Username | Password |
+|---|---|---|---|
+| Magento storefront | `/` | `emma.lopez@gmail.com` | `Password.123` |
+| Magento admin | `/admin` | `admin` | `admin1234` |
+| GitLab | `/` | `root` | `webarena1234!` |
+| Reddit | `/` | `MarvelsGrantMan136` | `test1234` |
+
+---
+
+## Troubleshooting
+
+### A service's `.node` file never appears
+
+The job is still starting, or it failed before the readiness check passed. Check the SLURM output log:
+
+```bash
+cat <service>/slurm_<svc>.out | tail -50
+```
+
+### HTTP 502 from a service
+
+The service started but an internal component (MySQL, PostgreSQL, PHP-FPM) hasn't come up yet, or it crashed. Check the SLURM log for the specific error. Most startup failures are transient; re-submitting the job is often sufficient.
+
+### GitLab is slow to start
+
+Normal — GitLab Omnibus (Rails + Sidekiq + Puma + PostgreSQL + Redis) takes 3–5 minutes to fully initialize on first boot. The health check polls for up to 10 minutes.
+
+### shopping_admin admin panel is slow on first load
+
+Also normal. The first request to `/admin` triggers Magento's PHP dependency injection code generation (if `magento_generated/` was empty). `run_shopping_admin.sh` pre-warms the admin panel and only writes the `.shopping_admin_node` file after it responds, so agents should not see this delay.
+
+### Node files exist but services are unreachable
+
+The SLURM jobs may have ended (8-hour time limit). Check with `squeue -u $USER`. Re-submit with `bash launch_all.sh`.

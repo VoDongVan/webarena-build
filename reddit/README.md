@@ -1,192 +1,161 @@
-# WebArena Reddit (Postmill) — Setup Guide (Unity HPC)
+# WebArena Reddit (Postmill)
 
-This directory sets up the **Postmill forum** environment used by WebArena, adapted to run
-under **Apptainer** on UMass Unity HPC. Unity forbids Docker, so the CMU-provided Docker image
-(`postmill-populated-exposed-withimg.tar`) must be converted to a SIF and run rootlessly.
+Runs the WebArena Reddit environment (Postmill forum software) as a rootless Apptainer container inside a SLURM job.
 
 - **Port:** 9999
-- **Apptainer instance name:** `webarena_reddit`
-- **URL:** `http://localhost:9999/`
+- **Apptainer instance:** `webarena_reddit`
+- **URL:** `http://<node>:9999/`
+- **Login:** `MarvelsGrantMan136` / `test1234`
 
 ---
 
-## Prerequisites
+## Files
 
-- You must be on a **compute node** (not a login node): `salloc -p cpu ...`
-- Apptainer must be available (pre-installed on Unity)
-- `reddit.sif` must be present (run `download.sh` if not — it builds the SIF from the tar archive)
+| File | Purpose |
+|---|---|
+| `download.sh` | Converts the Docker tar archive to `reddit.sif` |
+| `set_up.sh` | One-time setup (run after download) |
+| `run_reddit.sh` | Starts the service; called by the SLURM script |
+| `slurm_reddit.sh` | SLURM batch wrapper (submit with `sbatch`) |
+| `test_reddit.sh` | Smoke test |
+| `custom_configs/` | Config files bind-mounted over SIF paths at runtime |
 
 ---
 
 ## First-Time Setup
 
-Run **once** per cluster filesystem location:
+From a compute node:
 
 ```bash
-bash set_up.sh
+bash download.sh    # converts Docker tar → reddit.sif
+bash set_up.sh      # prepares custom_configs/
 ```
 
-This does the following in order:
-
-1. Verifies `reddit.sif` is present
-2. Creates `webarena_data/` and `custom_configs/` directory structures
-3. Extracts writable data out of the SIF (PostgreSQL data dir, Postmill `var/`)
-4. Generates patched config files (nginx port, rootless postgres supervisor override)
-5. Generates `run_reddit.sh` and `slurm_reddit.sh`
-
-All extraction steps are **idempotent** — re-running `set_up.sh` skips steps already done.
+After setup, start the service with `sbatch slurm_reddit.sh` or via `bash ../../launch_all.sh`.
 
 ---
 
-## Starting the Site (After Setup)
+## How It Starts (run_reddit.sh)
 
-**Interactive** (current node):
-```bash
-bash run_reddit.sh
+Each job start extracts a fresh copy of all state from the read-only SIF to `/tmp` on the compute node's local SSD:
+
+```
+/tmp/webarena_runtime_reddit/
+├── pgsql/           ← /usr/local/pgsql/data  (PostgreSQL data dir, chmod 700)
+├── postmill_var/    ← /var/www/html/var        (Symfony cache / sessions / logs)
+├── run/             ← /run and /var/run
+└── log/             ← /var/log
 ```
 
-**SLURM batch job** (dedicated CPU node, keeps running after you disconnect):
-```bash
-sbatch slurm_reddit.sh
-```
+After extraction, `run_reddit.sh`:
+1. Clears the Symfony cache (`postmill_var/cache/`) so PHP doesn't load stale compiled templates
+2. Extracts and patches the nginx vhost (`listen 80` → `listen 9999`) and main nginx config (redirects temp paths to `/run/nginx/` subdirs)
+3. Writes a minimal `start.sh` entrypoint that bypasses the original `docker-entrypoint.sh`
+4. Starts the Apptainer instance with all directories bind-mounted
+5. Executes `start.sh` inside the instance (launches supervisord)
+6. Polls port 9999 until HTTP 200 or 302 is received
+7. Writes `homepage/.reddit_node` to signal readiness
+
+When the SLURM job ends, a `trap` removes the `/tmp` workspace and stops the instance.
+
+**Why extract to /tmp each time?** scratch3 (NFS) does not support POSIX `fcntl()` locks. PHP-FPM creates an accept mutex in `/tmp` using `flock()`; NFS returns `EIO` for these, causing php-fpm to exit 255 on startup. The compute node's `/tmp` is local SSD and supports locking correctly. Fresh extraction also guarantees a clean state on every start.
 
 ---
 
-## Stopping the Site
+## Service Stack
 
-```bash
-apptainer instance stop webarena_reddit
-# or, if running via SLURM:
-scancel <jobid>
-```
+Managed by **supervisord**:
 
----
+| Service | Priority | Notes |
+|---|---|---|
+| `postgres` | 1 | PostgreSQL, Unix socket at `/run/postgresql/.s.PGSQL.5432` |
+| `php-fpm` | 2 | PHP-FPM (Symfony/Postmill), listens on `127.0.0.1:9000` |
+| `nginx` | 3 | Serves port 9999, proxies PHP via FastCGI |
 
-## Accessing from Your Local Machine
-
-```bash
-ssh -L 9999:<node-hostname>:9999 <username>@unity.rc.umass.edu
-```
-
-Then open `http://localhost:9999/` in your browser.
+No TCP port conflicts with any other WebArena service (PostgreSQL uses a Unix socket; PHP-FPM is loopback-only).
 
 ---
 
-## Issues Encountered and How They Were Fixed
+## Issues Solved and How
 
 ### 1. `docker-entrypoint.sh` requires root for `chown` and `su postgres`
 
-**Problem:** The entrypoint does `chown nginx:nginx /run/nginx` and runs
-`su postgres -c "initdb -D /usr/local/pgsql/data"` — both require root, which
-rootless Apptainer doesn't have.
+The original entrypoint does `chown nginx:nginx /run/nginx` and runs postgres init via `su postgres -c "initdb ..."`. Both require root. Rootless Apptainer does not have root.
 
-**Fix:** Replace the entrypoint via bind mount with a minimal `start.sh`:
-
+**Fix:** Bind-mount a minimal replacement entrypoint (`custom_configs/start.sh`):
 ```bash
 #!/bin/sh
 exec supervisord -n -j /supervisord.pid -c /etc/supervisord.conf
 ```
-
-The PostgreSQL data is already fully initialized inside the SIF (pre-populated image),
-so `initdb` doesn't need to run at all.
+The PostgreSQL data is already fully initialized inside the SIF, so `initdb` doesn't need to run.
 
 ---
 
 ### 2. Supervisor config starts postgres via `su postgres`
 
-**Problem:** The default `/etc/supervisor.d/pgsql.ini` runs:
-```
-command=su postgres -c "postgres -D /usr/local/pgsql/data"
-```
-`su` requires root to switch users.
+The default `/etc/supervisor.d/pgsql.ini` runs `su postgres -c "postgres -D ..."`. `su` requires root to switch users.
 
-**Fix:** Override via bind mount with a patched `custom_configs/pgsql.ini` that runs
-postgres directly:
+**Fix:** Bind-mount a patched `custom_configs/pgsql.ini` that runs postgres directly:
 ```ini
 command=postgres -D /usr/local/pgsql/data
 ```
-
-PostgreSQL doesn't require a specific OS user — it just needs read/write access to
-the data directory, which we have since we extracted it as our own user.
+PostgreSQL only needs read/write access to its data directory — it does not require a specific OS user.
 
 ---
 
-### 3. Port 80 is a privileged port
+### 3. Port 80 is privileged — unprivileged users cannot bind below 1024
 
-**Problem:** nginx listens on port 80; unprivileged users cannot bind below 1024.
+nginx in the SIF listens on port 80. Binding privileged ports requires root.
 
-**Fix:** Extract the nginx vhost config and patch `listen 80` → `listen 9999` via bind mount.
-Port 9999 is the WebArena-standard port for this service.
-
----
-
-### 4. `%startscript` is empty — supervisord never launches
-
-**Problem:** Same Docker-conversion artifact as the other WebArena images. `apptainer instance start`
-runs `%startscript`, which is empty, so the instance starts but no services launch.
-
-**Fix:** After `apptainer instance start`, explicitly launch supervisord:
+**Fix:** Extract the nginx vhost config, patch `listen 80` → `listen 9999`, and bind-mount the patched version. Done inside `run_reddit.sh` on every start so the patch is always current:
 ```bash
-apptainer exec instance://webarena_reddit \
-  supervisord -n -j /supervisord.pid -c /etc/supervisord.conf &
+apptainer exec $SIF_FILE cat /etc/nginx/conf.d/default.conf > custom_configs/conf_default.conf
+sed -i "s/listen 80/listen $PORT/g" custom_configs/conf_default.conf
 ```
 
 ---
 
-### 5. PostgreSQL data directory — stale `postmaster.pid`
+### 4. nginx temp dirs missing — startup crash
 
-**Problem:** The extracted PostgreSQL data dir contains a `postmaster.pid` from
-when it was running inside Docker during image creation. If this file exists,
-`postgres` refuses to start, thinking another instance is already running.
+nginx requires `client_body`, `proxy`, `fastcgi`, `uwsgi`, `scgi` temp dirs under its working dir. When `/run` is bind-mounted fresh from `/tmp`, these dirs don't exist.
 
-**Fix:** Remove `postmaster.pid` before each start:
+**Fix:** `run_reddit.sh` pre-creates them before starting the instance:
 ```bash
-rm -f webarena_data/pgsql/postmaster.pid
+mkdir -p "$WORKSPACE/run/nginx/client_body" "$WORKSPACE/run/nginx/proxy" ...
+```
+The main nginx.conf is also patched to point temp paths to `/run/nginx/` subdirs (the SIF's default `/var/tmp/nginx` doesn't exist).
+
+---
+
+### 5. `%startscript` is empty — supervisord never launches
+
+Docker-to-SIF conversion leaves `%startscript` empty. `apptainer instance start` runs `%startscript`, which does nothing.
+
+**Fix:** After `apptainer instance start`, execute the entrypoint explicitly:
+```bash
+apptainer exec instance://webarena_reddit /docker-entrypoint.sh &
 ```
 
 ---
 
-### 6. PostgreSQL requires data directory is not group/world-writable
+### 6. Stale PostgreSQL `postmaster.pid` (historical)
 
-**Problem:** PostgreSQL refuses to start if the data directory has group or world
-write permissions, as a security measure.
+The original setup kept data on NFS. After an unclean shutdown, the stale `postmaster.pid` prevented postgres from restarting.
 
-**Fix:** Use `chmod -R 700 webarena_data/pgsql` instead of `777`.
+**Resolved by fresh-state design:** The PostgreSQL data dir is extracted fresh from the SIF on every start. No stale files survive between runs.
 
 ---
 
-## Directory Layout
+### 7. Stale Symfony cache causes php-fpm exit 255 (historical)
 
-```
-reddit/
-├── set_up.sh                              # One-time setup script
-├── run_reddit.sh                          # Start script (generated by set_up.sh)
-├── slurm_reddit.sh                        # SLURM batch wrapper (generated by set_up.sh)
-├── download.sh                            # Builds reddit.sif from tar archive
-├── reddit.sif                             # Built Apptainer image
-├── postmill-populated-exposed-withimg.tar # Source Docker image
-├── custom_configs/                        # Bind-mounted config overrides
-│   ├── start.sh                           # Replaces docker-entrypoint.sh
-│   ├── pgsql.ini                          # Rootless postgres supervisor override
-│   └── conf_default.conf                  # nginx vhost (port-patched to 9999)
-└── webarena_data/                         # Extracted writable data
-    ├── pgsql/                             # PostgreSQL data directory (chmod 700)
-    ├── postmill_var/                      # Postmill var/ (Symfony cache/logs/sessions)
-    ├── nginx_tmp/                         # nginx temp files (/var/tmp/nginx)
-    ├── run/                               # Runtime sockets/pids (/run and /var/run)
-    ├── log/                               # System logs (/var/log)
-    └── tmp/                               # Temp files (/tmp)
-```
+A PHP session from a prior run could leave compiled Symfony container files in `var/cache/`. On the next start, php-fpm would try to load the stale bytecode and fail.
 
-## Service Stack
+**Resolved by fresh-state design:** `postmill_var/` is extracted fresh from the SIF, and `run_reddit.sh` clears the cache dir immediately after extraction.
 
-Managed by supervisord, priority order:
+---
 
-| Service | Priority | Notes |
-|---|---|---|
-| `postgres` | 1 | PostgreSQL 14.7, socket at `/run/postgresql/.s.PGSQL.5432` |
-| `php-fpm` | 2 | PHP-FPM on port 9000 |
-| `nginx` | 3 | Serves Postmill app, proxies PHP via fastcgi |
+### 8. NFS lock failures (historical)
 
-Database connection is configured in the nginx fastcgi params:
-`pgsql://postmill:postmill@localhost:5432/postmill`
+PHP-FPM's accept mutex and PostgreSQL's socket lock both use `flock()`/`fcntl()`. NFS returns `EIO` for these calls, causing both services to fail.
+
+**Resolved by fresh-state design:** All runtime dirs (`/run`, `/tmp`, `/var/log`) are under `/tmp` on the local SSD.

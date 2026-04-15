@@ -1,278 +1,184 @@
-# WebArena Shopping Admin — Setup Guide (Unity HPC)
+# WebArena Shopping Admin (Magento Admin Panel)
 
-This directory sets up the **Magento 2 admin panel** environment used by WebArena, adapted to run
-under **Apptainer** on UMass Unity HPC. Unity forbids Docker, so the CMU-provided Docker image
-(`shopping_admin_final_0719.tar`) must be converted to a SIF and run rootlessly.
+Runs the WebArena Magento 2 admin panel as a rootless Apptainer container inside a SLURM job.
 
 - **Port:** 7780
-- **Apptainer instance name:** `webarena_shopping_admin`
-- **Admin URL:** `http://localhost:7780/admin`
+- **Apptainer instance:** `webarena_shopping_admin`
+- **Admin URL:** `http://<node>:7780/admin`
+- **Login:** `admin` / `admin1234`
 
 ---
 
-## Prerequisites
+## Files
 
-- You must be on a **compute node** (not a login node): `salloc -p cpu ...`
-- Apptainer must be available: `module load apptainer` if needed
-- `shopping_admin_final_0719.tar` must be present (run `download.sh` if not)
+| File | Purpose |
+|---|---|
+| `download.sh` | Converts the Docker tar archive to `shopping_admin.sif` |
+| `set_up.sh` | One-time setup (run after download) |
+| `run_shopping_admin.sh` | Starts the service; called by the SLURM script |
+| `slurm_shopping_admin.sh` | SLURM batch wrapper (submit with `sbatch`) |
+| `test_shopping_admin.sh` | Smoke test |
+| `custom_configs/` | Config files bind-mounted over SIF paths at runtime |
 
 ---
 
 ## First-Time Setup
 
-Run **once** per cluster filesystem location:
+From a compute node:
 
 ```bash
-bash set_up.sh
+bash download.sh    # converts Docker tar → shopping_admin.sif (10–20 min)
+bash set_up.sh      # prepares custom_configs/
 ```
 
-This does the following in order:
-
-1. Builds `shopping_admin.sif` from the Docker tar archive (10–20 min)
-2. Creates `webarena_data/` and `custom_configs/` directory structures
-3. Extracts writable data out of the SIF (MySQL, Elasticsearch, Redis, Magento var/generated)
-4. Generates patched config files (nginx port, supervisord, start.sh entrypoint bypass)
-5. Generates `run_shopping_admin.sh`
-6. Boots the instance for the first time
-7. Patches the Magento base URL from CMU's server to `localhost:7780`, flushes cache, reindexes
-
-All extraction steps are **idempotent** — re-running `set_up.sh` skips steps already done.
+After setup, start the service with `sbatch slurm_shopping_admin.sh` or via `bash ../../launch_all.sh`.
 
 ---
 
-## Starting the Site (After Setup)
+## How It Starts (run_shopping_admin.sh)
 
-From the same directory on any compute node:
+Each job start extracts a fresh copy of all state from the read-only SIF to `/tmp` on the compute node's local SSD:
 
-```bash
-bash run_shopping_admin.sh
 ```
+/tmp/webarena_runtime_shopping_admin/
+├── mysql/              ← /var/lib/mysql
+├── esdata/             ← /usr/share/java/elasticsearch/data
+├── eslog/              ← /usr/share/java/elasticsearch/logs
+├── es_config/          ← /usr/share/java/elasticsearch/config
+├── redis/              ← /var/lib/redis
+├── magento_var/        ← /var/www/magento2/var    (caches, sessions)
+├── magento_generated/  ← /var/www/magento2/generated  (DI interceptors, factories)
+├── run/                ← /run
+├── tmp/                ← /tmp
+├── log/                ← /var/log
+└── nginx_tmp/          ← /var/lib/nginx
+```
+
+After extraction, `run_shopping_admin.sh`:
+1. Extracts and patches the nginx vhost config (`listen 80` → `listen 7780`)
+2. Writes a minimal `start.sh` entrypoint that bypasses `docker-entrypoint.sh`
+3. Starts the Apptainer instance with all directories bind-mounted
+4. Launches supervisord inside the instance
+5. Waits for MySQL to accept connections (up to 5 min)
+6. Updates the Magento base URL to `http://<current-node>:7780/` in the database
+7. Flushes the Magento cache
+8. Waits for the storefront (`/`) to return HTTP 2xx
+9. **Warms up the admin panel** — hits `/admin/` repeatedly until it responds (up to 10 min)
+10. Writes `homepage/.shopping_admin_node` to signal readiness
+
+When the SLURM job ends, a `trap` removes the `/tmp` workspace and stops the instance.
+
+**Why extract to /tmp each time?** scratch3 (NFS) does not support POSIX `fcntl()` locks. InnoDB, Elasticsearch, and PHP-FPM all use file locking that fails with `EIO` on NFS. The compute node's `/tmp` is local SSD and supports locking correctly. Fresh extraction also guarantees a clean state on every start.
 
 ---
 
-## Stopping the Site
+## Why the Admin Panel Warmup Matters
 
-```bash
-apptainer instance stop webarena_shopping_admin
-```
+The first HTTP request to `/admin` triggers Magento's PHP dependency injection code generation if `magento_generated/` was empty or incomplete. This compilation can take **3–8 minutes**. During this time, the admin login form doesn't render — any browser or Playwright agent that navigates to `/admin` immediately will time out waiting for the page.
 
----
-
-## Accessing from Your Local Machine
-
-The site listens on `localhost:7780` inside the cluster. Use an SSH tunnel:
-
-```bash
-ssh -L 7780:<node-hostname>:7780 <your-username>@unity.rc.umass.edu
-```
-
-Get the current node hostname with `hostname` while on the compute node. Then open:
-
-- Storefront: `http://localhost:7780/`
-- Admin panel: `http://localhost:7780/admin`
+By extracting `magento_generated/` from the SIF (which contains the pre-compiled DI code) and then pre-hitting `/admin` before writing the `.shopping_admin_node` file, the admin panel is guaranteed to be fully responsive before any agent can reach it.
 
 ---
 
-## Issues Encountered and How They Were Fixed
+## Service Stack
 
-### 1. SIF is read-only — MySQL, Elasticsearch, and Magento need writable storage
+Managed by **supervisord** (launched via the custom entrypoint):
 
-**Problem:** Apptainer SIF files are immutable. MySQL, Elasticsearch, Redis, and Magento's
-`var/` and `generated/` directories all require write access at runtime.
+| Service | Notes |
+|---|---|
+| `mysql` | MariaDB, listens on `127.0.0.1:3306` |
+| `elasticsearch` | Search index, listens on `127.0.0.1:9200` (transport 9300) |
+| `redis` | Session/cache store, listens on `127.0.0.1:6379` |
+| `php-fpm` | PHP-FPM, listens on `127.0.0.1:9000` |
+| `nginx` | Magento web server, listens on port 7780 |
 
-**Fix:** Extract those directories out of the SIF once into `webarena_data/`, then bind-mount
-them back into the container at their original paths on every run:
-
-```
---bind $(pwd)/webarena_data/mysql:/var/lib/mysql
---bind $(pwd)/webarena_data/esdata:/usr/share/java/elasticsearch/data
-...
-```
-
-**Why this way:** Bind mounts let the container see the paths at their expected locations while
-the actual files live on the writable host filesystem. This is the standard Apptainer pattern
-for stateful services.
+**Port conflict:** Both shopping and shopping_admin use MySQL on 3306 and Elasticsearch on 9200. They **cannot run on the same compute node simultaneously**. `launch_all.sh` handles this automatically.
 
 ---
 
-### 2. `docker-entrypoint.sh` runs `chown mysql:mysql` which requires root
+## Issues Solved and How
 
-**Problem:** The SIF's runscript calls `/docker-entrypoint.sh` before starting `supervisord`.
-That script does `chown mysql:mysql /var/lib/mysql`, which fails under rootless Apptainer
-(no `root` privilege). This caused the container to abort before any service started — only
-`appinit` was visible in `ps aux`.
+### 1. `docker-entrypoint.sh` runs `chown mysql:mysql` — requires root
 
-**Fix:** Write a minimal `custom_configs/start.sh` that just execs `supervisord`:
+The SIF's runscript calls `/docker-entrypoint.sh`, which does `chown mysql:mysql /var/lib/mysql`. This fails under rootless Apptainer. The symptom is: the instance starts (visible in `apptainer instance list`) but supervisord never launches — only `appinit` appears in `ps`.
 
+**Fix:** Bind-mount a minimal replacement entrypoint:
 ```bash
-#!/bin/bash
+# custom_configs/start.sh
 exec supervisord -n -c /etc/supervisord.conf
 ```
 
-Then bind-mount it over `/docker-entrypoint.sh`:
-
-```
---bind $(pwd)/custom_configs/start.sh:/docker-entrypoint.sh
-```
-
-**Why this way:** The runscript calls whatever is at `/docker-entrypoint.sh`, so replacing it
-via bind mount is the least invasive fix — no SIF rebuild required, and the override is
-explicit and reversible.
-
 ---
 
-### 3. Port 80 is a privileged port — unprivileged users cannot bind to it
+### 2. Port 80 is privileged — nginx cannot bind
 
-**Problem:** The nginx vhost config inside the SIF listens on port 80. Binding to ports below
-1024 requires root on Linux. Apptainer runs as an unprivileged user, so nginx would fail.
-
-**Fix:** Extract the vhost config, patch it with `sed`, and bind-mount the patched version:
-
+**Fix:** Extract and patch the nginx vhost config on every run:
 ```bash
-apptainer exec shopping_admin.sif cat /etc/nginx/conf.d/default.conf > custom_configs/conf_default.conf
-sed -i 's/listen 80/listen 7780/g' custom_configs/conf_default.conf
+apptainer exec $SIF_FILE cat /etc/nginx/conf.d/default.conf > custom_configs/conf_default.conf
+sed -i "s/listen 80/listen 7780/g" custom_configs/conf_default.conf
 ```
 
-**Why this way:** Patching on the host and bind-mounting avoids modifying the SIF.
-Port 7780 is the WebArena-standard port for this service and is unprivileged.
+---
+
+### 3. Elasticsearch uses `su elastico` — fails without root
+
+**Fix:** `custom_configs/supervisord.conf` calls the ES binary directly, no user switching.
 
 ---
 
-### 4. Elasticsearch uses `su elastico` — fails without root
+### 4. `mysqld --user=mysql` fails without root
 
-**Problem:** The original supervisor config starts Elasticsearch via `su elastico -c ...`,
-which requires root to switch users. This would silently fail under Apptainer.
+The original supervisor config passes `--user=mysql` to `mysqld`, instructing it to drop privileges to the `mysql` OS user. This fails when already running as an unprivileged user.
 
-**Fix:** The custom `supervisord.conf` calls the Elasticsearch binary directly:
-
-```ini
-[program:elasticsearch]
-command=/usr/share/java/elasticsearch/bin/elasticsearch
-```
-
-**Why this way:** Running as the current (unprivileged) user is correct for rootless containers.
-Elasticsearch does not actually require a specific user; the `su` was a Docker-ism.
+**Fix:** `custom_configs/supervisord.conf` omits the `--user=mysql` flag.
 
 ---
 
-### 5. `mysqld --user=mysql` flag causes failure without root
+### 5. Magento base URL hardcoded to CMU's server
 
-**Problem:** The original supervisor config passed `--user=mysql` to `mysqld`, instructing it
-to drop privileges to the `mysql` OS user. This fails when already running as an unprivileged
-user (can't drop to a different user without root).
+The database stores `http://metis.lti.cs.cmu.edu:7780/`. The hostname changes with every SLURM job.
 
-**Fix:** The custom `supervisord.conf` omits the `--user=mysql` flag from the `mysqld` command.
-
-**Why this way:** When running as a non-root user, MySQL doesn't need to drop privileges —
-it's already unprivileged. Removing the flag is the correct fix.
-
----
-
-### 6. Magento base URL hardcoded to CMU's server
-
-**Problem:** The Magento database stores the site's base URL. In the original image it points
-to `http://metis.lti.cs.cmu.edu:7780/`. After boot, all HTTP responses redirect to that address,
-making the site unreachable from the HPC node.
-
-**Fix:** After first boot, patch the URL directly in the database and flush Magento's cache:
-
+**Fix:** On every start, after MySQL is ready:
 ```bash
-mysql -u root --socket=/run/mysqld/mysqld.sock magento -e "
-    UPDATE core_config_data SET value='http://localhost:7780/'
-    WHERE path='web/unsecure/base_url';
-    UPDATE core_config_data SET value='http://localhost:7780/'
-    WHERE path='web/secure/base_url';
-"
+mysql -h127.0.0.1 -umagentouser -pMyPassword magentodb -e \
+  "UPDATE core_config_data SET value='http://$NODE:7780/' WHERE path LIKE 'web/%base_url%';"
 php /var/www/magento2/bin/magento cache:flush
-php /var/www/magento2/bin/magento indexer:reindex
 ```
-
-**Why this way:** Magento caches configuration aggressively. The DB update sets the correct
-value; the cache flush ensures Magento reads the new value; the reindex rebuilds the search
-index which may have stale URL references.
 
 ---
 
-### 7. nginx fails to start — missing `tmp/` subdirectories under `/var/lib/nginx`
+### 6. nginx temp dirs missing — startup crash
 
-**Problem:** nginx requires several subdirectories under its working directory for temporary
-files (`client_body`, `proxy`, `fastcgi`, `uwsgi`, `scgi`). When `/var/lib/nginx` is
-bind-mounted from `webarena_data/nginx/` (which was initially extracted with only a `logs/`
-subdir), nginx would crash at startup with:
-
-```
-mkdir() "/var/lib/nginx/tmp/client_body" failed (2: No such file or directory)
-```
-
-**Fix:** Explicitly create these directories during setup and at the start of every run:
-
-```bash
-mkdir -p webarena_data/nginx/tmp/client_body
-mkdir -p webarena_data/nginx/tmp/proxy
-mkdir -p webarena_data/nginx/tmp/fastcgi
-mkdir -p webarena_data/nginx/tmp/uwsgi
-mkdir -p webarena_data/nginx/tmp/scgi
-```
-
-**Why this way:** nginx tries to `mkdir` these itself but cannot because the parent `/var/lib/nginx`
-is a bind mount owned by the host user. Pre-creating them on the host side before the bind
-mount is established ensures they exist when nginx starts.
+**Fix:** `run_shopping_admin.sh` pre-creates all required nginx temp subdirs before starting the instance.
 
 ---
 
-### 8. `apptainer instance start` does not launch supervisord — `%startscript` is empty
+### 7. Magento DI code generation on first `/admin` request — Playwright timeout
 
-**Problem:** When the Docker image was converted to a SIF, the `%startscript` section was left
-empty (only boilerplate copyright comments). `apptainer instance start` runs `%startscript`, not
-`%runscript`, so the instance starts (the `appinit` namespace process appears in `ps`) but
-**supervisord is never launched** and all services remain dead. The site returns connection
-timeouts even though `apptainer instance list` shows the instance as running.
+If `magento_generated/` is empty, the first `/admin` request triggers PHP's on-demand DI compilation. This takes several minutes. Playwright's `Locator.fill` times out waiting for the login form.
 
-This can be verified with:
-```bash
-apptainer inspect --startscript shopping_admin.sif   # empty / only copyright header
-apptainer inspect --runscript shopping_admin.sif      # has OCI_ENTRYPOINT and OCI_CMD
-```
-
-**Fix:** After `apptainer instance start` creates the namespace, explicitly launch supervisord
-via `apptainer exec`:
-
-```bash
-apptainer instance start [bind mounts...] shopping_admin.sif webarena_shopping_admin
-apptainer exec instance://webarena_shopping_admin \
-  supervisord -n -c /etc/supervisord.conf &
-```
-
-**Why this way:** `apptainer exec` runs a command inside an already-running instance using its
-bind mounts and namespace — the correct hook for this pattern. Running supervisord in the
-background (`&`) lets the script continue to poll for readiness.
+**Fix:** Extract `magento_generated/` from the SIF (pre-compiled DI code) and pre-warm `/admin` before writing the `.shopping_admin_node` readiness file. The warmup loop runs for up to 10 minutes with a 30-second per-request timeout.
 
 ---
 
-## Directory Layout
+### 8. NFS lock failures (historical)
 
+InnoDB (`ibdata1`), Elasticsearch (`NativeFSLockFactory`), and PHP-FPM (accept mutex) all crash on NFS due to missing `fcntl()` support.
+
+**Resolved by fresh-state design:** All runtime dirs are under `/tmp` on the local SSD.
+
+---
+
+## Troubleshooting
+
+**Admin panel loads a blank page or 500:** Check supervisord status:
+```bash
+apptainer exec instance://webarena_shopping_admin supervisorctl status
 ```
-shopping_admin/
-├── set_up.sh                  # One-time setup script
-├── run_shopping_admin.sh      # Start script for subsequent runs
-├── download.sh                # Downloads the Docker tar archive
-├── shopping_admin.sif         # Built Apptainer image (generated by set_up.sh)
-├── shopping_admin_final_0719.tar  # Source Docker image
-├── custom_configs/            # Bind-mounted config overrides
-│   ├── start.sh               # Replaces docker-entrypoint.sh
-│   ├── supervisord.conf       # Rootless-patched supervisor config
-│   ├── nginx.conf             # nginx main config
-│   └── conf_default.conf      # nginx vhost (port-patched to 7780)
-└── webarena_data/             # Extracted writable data (bind-mounted into container)
-    ├── mysql/                 # MySQL data directory
-    ├── redis/                 # Redis data
-    ├── esdata/                # Elasticsearch data
-    ├── eslog/                 # Elasticsearch logs
-    ├── es_config/             # Elasticsearch config (with single-node patch)
-    ├── magento_var/           # Magento var/ directory
-    ├── magento_generated/     # Magento generated code
-    ├── nginx/                 # nginx working dirs (logs/, tmp/)
-    ├── log/                   # System logs (/var/log)
-    ├── run/                   # Runtime sockets/pids (/run)
-    └── tmp/                   # Temp files (/tmp)
+
+Check the Magento exception log (inside the instance workspace):
+```bash
+cat /tmp/webarena_runtime_shopping_admin/magento_var/log/exception.log | tail -50
 ```
+
+**`/admin` redirects to metis.lti.cs.cmu.edu:** The base URL update didn't run. Check the SLURM log — MySQL likely hadn't started. Re-submit the job.
