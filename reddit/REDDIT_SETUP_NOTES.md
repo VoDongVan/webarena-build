@@ -14,21 +14,23 @@ No MySQL, Redis, or Elasticsearch — reddit is simpler than the shopping servic
 
 ---
 
-## NFS Lock Situation
+## Fresh-State Design
 
-Unlike shopping and shopping_admin, **reddit required no new NFS lock fixes**. The existing
-`run_reddit.sh` already handles all NFS-related issues:
+`run_reddit.sh` uses the same fresh-state design as all other services. On every start it:
 
-| Potential problem | How it's handled |
+1. Wipes `/tmp/webarena_runtime_reddit/`
+2. Extracts `pgsql/` (PostgreSQL data) and `postmill_var/` (Symfony cache/sessions) from the SIF
+3. Clears the Symfony cache immediately after extraction
+4. Binds all mutable paths from `/tmp/webarena_runtime_reddit/` — nothing runs from NFS
+
+This eliminates all NFS lock problems:
+
+| Potential problem | How it's resolved |
 |---|---|
-| PHP-FPM accept mutex in `/tmp` | `/tmp` is intentionally NOT bind-mounted from NFS; the container's own overlay `/tmp` is local storage — locking works |
-| PostgreSQL WAL corruption from unclean shutdown | `pg_resetwal -f` is run before each start to recover any corrupted WAL |
-| Stale `postmaster.pid` | Deleted before each start |
-| Stale socket lock file | `webarena_data/run/postgresql/.s.PGSQL.5432.lock` deleted before each start |
-
-PostgreSQL data (`webarena_data/pgsql/`) remains on NFS scratch3. PostgreSQL does not use
-`fcntl()` locks on its data files in a way that hits the NFS EIO issue — it uses the Unix
-socket and WAL for crash recovery, and `pg_resetwal` handles the unclean-shutdown case.
+| PHP-FPM accept mutex | `/tmp` inside container maps to node-local `/tmp/webarena_runtime_reddit/tmp` — locking works |
+| PostgreSQL `fcntl()` WAL locks | Data dir is on node-local SSD, not NFS |
+| Stale `postmaster.pid` | Impossible — data dir is freshly extracted from SIF on every start |
+| Stale Symfony cache | Cleared immediately after extraction (`rm -rf postmill_var/cache/*`) |
 
 ---
 
